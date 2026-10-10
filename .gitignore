@@ -1,0 +1,10 @@
+# Keep credentials, local settings, reports, and dependencies out of this site.
+.env
+.env.*
+*.pem
+*.key
+*.log
+.DS_Store
+node_modules/
+ip-observation*.json
+.local/

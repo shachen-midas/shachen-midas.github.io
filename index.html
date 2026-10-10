@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="用多个独立来源检测你的公网 IPv4、IPv6 与 WebRTC 网络地址。看清每条连接的出口。">
+  <meta name="referrer" content="no-referrer">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src https://api.ipify.org https://api6.ipify.org https://api64.ipify.org https://www.cloudflare.com https://icanhazip.com; img-src 'self' data:; base-uri 'none'; form-action 'none'; object-src 'none'">
+  <meta name="theme-color" content="#101411">
+  <title>IP Observatory · 看见你的网络出口</title>
+  <link rel="icon" href="./favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="./style.css">
+  <script src="./app.js" defer></script>
+</head>
+<body>
+  <div class="shell">
+    <header><a class="brand" href="./" aria-label="IP Observatory 首页"><span class="brand-icon">◎</span> IP<span class="brand-light">OBSERVATORY</span></a><span class="edition">NETWORK FIELD NOTES <b>001</b></span></header>
+    <main>
+      <section class="intro"><div><p class="eyebrow"><span class="dot"></span> YOUR CONNECTION, IN FOCUS</p><h1>看见你的<br>网络<span class="accent">出口。</span></h1><p class="lede">一条连接，不一定只有一个地址。<br>从 HTTPS 到 WebRTC，交叉观察互联网眼中的你。</p></div><div class="radar" aria-hidden="true"><div class="ring r1"></div><div class="ring r2"></div><div class="ring r3"></div><div class="cross horizontal"></div><div class="cross vertical"></div><span class="radar-center">YOU</span><span class="radar-point p1"></span><span class="radar-point p2"></span><span class="radar-label">PUBLIC NETWORK</span><span class="radar-number">IPv4 / IPv6 / ICE</span></div></section>
+      <section class="reading" aria-labelledby="reading-title">
+        <div class="section-top"><h2 id="reading-title">当前公网地址 <span>PRIMARY OBSERVATION</span></h2><span id="run-status" role="status">准备检测</span></div>
+        <div class="primary-line"><p id="primary-ip" class="primary-ip">正在寻找出口…</p><button id="copy" class="icon-button" disabled aria-label="复制当前公网 IP">复制 ↗</button></div>
+        <p id="primary-note" class="muted">等待查询源响应。所有结果均来自本次连接。</p>
+        <div class="metrics"><div><span>IPv4</span><strong id="ipv4">检测中…</strong></div><div><span>IPv6</span><strong id="ipv6">检测中…</strong></div><div><span>WebRTC / STUN</span><strong id="rtc-summary">待手动检测</strong></div></div>
+        <div class="action-row"><button id="refresh" class="button primary">重新检测 <span>↻</span></button><button id="rtc" class="button secondary">扩展检测 · WebRTC <span>↗</span></button><button id="export" class="text-button" disabled>导出报告 ↓</button></div>
+        <p class="disclosure">页面会自动连接 ipify、Cloudflare、icanhazip 查询出口。扩展检测会额外连接 Google 与 Cloudflare 的 STUN 服务；无需摄像头或麦克风。</p>
+      </section>
+      <section class="sources" aria-labelledby="sources-title"><div class="section-heading"><h2 id="sources-title"><span class="index">01 /</span> 每条路径，都有依据</h2><span class="mono">LIVE SOURCES</span></div><div class="table-wrap"><table><thead><tr><th>检测来源 / 通道</th><th>观察到的地址</th><th>状态</th><th>耗时</th></tr></thead><tbody id="source-rows"></tbody></table></div><p id="comparison" class="observation" role="status">正在对照各来源的观测结果…</p></section>
+      <section class="explain"><div><span class="index">02 / READING THE SIGNAL</span><h2>这是“真实 IP”吗？</h2><p>这是各条网络路径实际观察到的地址。VPN、代理、NAT 和运营商网络都可能改变出口；网页无法保证取得代理背后的原始 IP。</p></div><div class="notes"><article><span>↗</span><div><h3>多个地址，可能都是真的</h3><p>IPv4 与 IPv6、分流代理、不同网络接口可能使用不同出口。结果不一致不能单独证明 VPN 泄漏。</p></div></article><article><span>◎</span><div><h3>WebRTC 提供另一条观察路径</h3><p>STUN 尝试获取浏览器允许暴露的连接候选地址。mDNS、浏览器隐私设置或 UDP 限制可能隐藏地址或让检测失败。</p></div></article><article><span>⌁</span><div><h3>结果留在当前页面</h3><p>本应用不保存检测历史，也不将结果上传到站长的数据库。查询服务会看到请求来源；GitHub 和第三方服务可能记录访问日志。</p></div></article></div></section>
+      <noscript><p class="observation">此检测需要 JavaScript。请启用后重新加载页面。</p></noscript>
+      <p id="notice" class="notice" role="status"></p>
+    </main>
+    <footer><span>◎ IP OBSERVATORY</span><span>BUILT FOR CURIOSITY · BY SHACHEN-MIDAS</span><span>HTTPS + STUN</span></footer>
+  </div>
+</body>
+</html>
