@@ -18,6 +18,63 @@ let rtcResults = [];
 let busy = false;
 let rtcBusy = false;
 let measuredAt = null;
+const countries = new Map();
+const countryQueue = [];
+let countryWorkers = 0;
+
+function countryFlag(code) {
+  return Array.from(code, char => String.fromCodePoint(127397 + char.charCodeAt(0))).join('');
+}
+
+function countryInfo(ip) {
+  if (ip === '0.0.0.0' || ip === '::') return { flag: '⚪', label: '占位地址，无国家' };
+  if (addressScope(ip) !== 'public') return { flag: '🏠', label: '本地 / 共享 / 保留地址，无国家' };
+  const entry = countries.get(ip);
+  if (!entry || entry.status === 'pending') return { flag: '🌐', label: '国家查询中…' };
+  if (!entry.code) return { flag: '🌐', label: '国家未知 / 查询不可用' };
+  let label = entry.code;
+  try { label = new Intl.DisplayNames(['zh-CN'], { type: 'region' }).of(entry.code); } catch (_) { /* Country code is a readable fallback. */ }
+  return { flag: countryFlag(entry.code), label, code: entry.code };
+}
+
+function displayIP(ip) { const country = countryInfo(ip); return `${country.flag} ${ip}（${country.label}）`; }
+
+function allAddresses() {
+  const unique = new Map();
+  [...results, ...rtcResults].forEach(result => (result.addresses || []).forEach(address => {
+    if (!unique.has(address.ip)) unique.set(address.ip, { ...address, sources: [] });
+    const label = `${result.name} / ${address.role === 'related' ? `${address.type} 关联地址` : address.type || 'HTTPS 出口'}`;
+    const entry = unique.get(address.ip);
+    if (!entry.sources.includes(label)) entry.sources.push(label);
+  }));
+  return [...unique.values()];
+}
+
+function scheduleCountries() {
+  allAddresses().forEach(({ ip, scope }) => {
+    if (scope !== 'public' || countries.has(ip)) return;
+    countries.set(ip, { status: 'pending' }); countryQueue.push(ip);
+  });
+  while (countryWorkers < 3 && countryQueue.length) {
+    countryWorkers++;
+    lookupCountry(countryQueue.shift());
+  }
+}
+
+async function lookupCountry(ip) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 6000);
+  try {
+    const response = await fetch(`https://api.country.is/${encodeURIComponent(ip)}`, { signal: controller.signal, credentials: 'omit', referrerPolicy: 'no-referrer' });
+    if (!response.ok) throw new Error('Country lookup unavailable');
+    const data = await response.json();
+    if (normalizeIP(data.ip) !== ip || !/^[A-Z]{2}$/.test(data.country || '') || ['XX', 'ZZ'].includes(data.country)) throw new Error('Unknown country');
+    countries.set(ip, { status: 'ok', code: data.country });
+  } catch (_) { countries.set(ip, { status: 'error' }); }
+  finally {
+    clearTimeout(timeout); countryWorkers--; scheduleCountries(); render();
+  }
+}
 
 function normalizeIP(value) {
   if (typeof value !== 'string') return null;
@@ -60,7 +117,14 @@ function render() {
     const name = makeCell(result.name);
     const channel = document.createElement('small'); channel.textContent = result.channel; name.append(channel);
     const addresses = result.addresses || [];
-    const address = makeCell(addresses.length ? addresses.map(x => x.ip + (x.scope === 'local' ? '（本地/共享地址）' : '')).join(' · ') : (result.detail || '—'));
+    const address = makeCell('');
+    if (!addresses.length) address.textContent = result.detail || '—';
+    addresses.forEach(x => {
+      const line = document.createElement('div'); line.className = 'source-address';
+      line.textContent = displayIP(x.ip);
+      const type = document.createElement('small'); type.textContent = x.role === 'related' ? `${x.type} / 关联地址` : x.type || 'HTTPS 出口';
+      line.append(type); address.append(line);
+    });
     const state = makeCell('');
     const badge = document.createElement('span'); badge.className = `status ${result.status}`;
     badge.textContent = { pending: '◌ 检测中', idle: '○ 未开始', ok: '● 已观测', error: '— 不可用' }[result.status];
@@ -70,25 +134,33 @@ function render() {
   const httpIPs = [...new Set(results.flatMap(x => (x.addresses || []).map(a => a.ip)))];
   const v4 = httpIPs.filter(ip => !ip.includes(':'));
   const v6 = httpIPs.filter(ip => ip.includes(':'));
-  const primary = v4[0] || v6[0];
-  setText('primary-ip', primary || (busy ? '正在寻找出口…' : '暂未获取地址'));
-  setText('ipv4', v4.join(' · ') || (busy ? '检测中…' : '未观测到'));
-  setText('ipv6', v6.join(' · ') || (busy ? '检测中…' : '未观测到'));
-  byId('copy').disabled = !primary;
-  byId('copy').dataset.ip = primary || '';
+  setText('ipv4', v4.map(displayIP).join(' · ') || (busy ? '检测中…' : '未观测到'));
+  setText('ipv6', v6.map(displayIP).join(' · ') || (busy ? '检测中…' : '未观测到'));
   const ok = results.filter(x => x.status === 'ok').length;
-  setText('primary-note', primary ? `${ok} / ${sources.length} 个 HTTPS 来源已响应 · ${measuredAt.toLocaleTimeString('zh-CN', { hour12: false })} · 下表保留全部观察结果` : '连接失败可能来自断网、服务限制、浏览器拦截或 IPv6 不可用。可重试或运行扩展检测。');
-  setText('run-status', busy || rtcBusy ? '检测进行中' : ok ? '本轮检测完成' : 'HTTPS 暂不可用');
+  const observed = allAddresses();
+  byId('copy').disabled = !observed.length;
+  byId('copy').dataset.ips = observed.map(x => x.ip).join('\n');
+  setText('observation-note', `${ok} / ${sources.length} 个 HTTPS 来源已响应 · ${measuredAt.toLocaleTimeString('zh-CN', { hour12: false })} · WebRTC 自动检测 · 合并重复地址，保留全部来源`);
+  const geoPending = observed.some(x => countries.has(x.ip) && countries.get(x.ip).status === 'pending');
+  setText('run-status', busy || rtcBusy ? '全面检测中' : geoPending ? '国家查询中' : observed.length ? '本轮检测完成' : '暂未取得地址');
+  const list = byId('all-addresses'); list.replaceChildren();
+  setText('address-count', `${observed.length} 个不同地址`);
+  if (!observed.length) { const empty = document.createElement('p'); empty.className = 'muted'; empty.textContent = busy || rtcBusy ? '正在收集各条连接的地址…' : '本轮未取得地址，请检查网络后重试。'; list.append(empty); }
+  observed.forEach(entry => {
+    const card = document.createElement('article'); card.className = 'address-card';
+    const value = document.createElement('strong'); value.textContent = displayIP(entry.ip);
+    const provenance = document.createElement('p'); provenance.textContent = entry.sources.join(' · ');
+    card.append(value, provenance); list.append(card);
+  });
   const rtcAddresses = [...new Set(rtcResults.flatMap(x => (x.addresses || []).filter(a => a.scope === 'public').map(a => a.ip)))];
   const rtcDone = rtcResults.some(x => x.status !== 'idle');
-  setText('rtc-summary', rtcBusy ? '检测中…' : rtcAddresses.join(' · ') || (rtcDone ? '未观测到公网候选' : '待手动检测'));
+  setText('rtc-summary', rtcAddresses.map(displayIP).join(' · ') || (rtcBusy ? '检测中…' : rtcDone ? '未观测到公网候选' : '准备检测'));
   let comparison = busy ? '正在对照各来源的观测结果…' : !ok ? 'HTTPS 来源均未返回有效地址；这不表示你没有公网出口。' : v4.length > 1 || v6.length > 1 ? '同一地址族出现多个 HTTPS 出口，可能与网络分流、代理或路径变化有关。' : '已响应的 HTTPS 来源在同一地址族内结果一致；这不能排除 VPN 或代理。';
   if (!busy && !v6.length) comparison += ' 本轮没有观察到 IPv6，不能据此断定设备不支持 IPv6。';
   if (rtcAddresses.some(ip => !httpIPs.includes(ip))) comparison += ' WebRTC 观察到不同的公网候选地址；请结合网络配置判断，不能直接认定为原始 IP。';
   setText('comparison', comparison);
   byId('refresh').disabled = busy || rtcBusy;
-  byId('rtc').disabled = busy || rtcBusy;
-  byId('export').disabled = busy || rtcBusy || !measuredAt;
+  byId('export').disabled = busy || rtcBusy || geoPending || !measuredAt;
 }
 
 async function probeHTTP(source) {
@@ -109,7 +181,7 @@ async function probeHTTP(source) {
     const ip = normalizeIP(value);
     if (!ip || addressScope(ip) !== 'public') throw new Error('返回值不是有效公网 IP');
     if (source.id === 'v4' && ip.includes(':') || source.id === 'v6' && !ip.includes(':')) throw new Error('地址族与检测通道不符');
-    result.addresses = [{ ip, scope: 'public' }]; result.status = 'ok';
+    result.addresses = [{ ip, scope: 'public' }]; result.status = 'ok'; scheduleCountries();
   } catch (error) {
     result.status = 'error';
     result.detail = error.name === 'AbortError' ? '超时（9 秒）' : error instanceof TypeError ? '网络 / CORS / 浏览器限制' : error.message;
@@ -118,12 +190,35 @@ async function probeHTTP(source) {
 
 async function refresh() {
   if (busy || rtcBusy) return;
-  busy = true; measuredAt = new Date();
+  busy = true; rtcBusy = true; measuredAt = new Date();
+  countries.forEach((entry, ip) => { if (entry.status === 'error') countries.delete(ip); });
   results = sources.map(x => ({ ...x, status: 'pending', addresses: [] }));
-  rtcResults = stunSources.map(x => ({ ...x, status: 'idle', addresses: [], detail: '点击「扩展检测」开始' }));
+  rtcResults = stunSources.map(x => ({ ...x, status: 'pending', addresses: [] }));
   setText('notice', ''); render();
-  await Promise.all(sources.map(probeHTTP));
-  busy = false; render();
+  await Promise.all([
+    Promise.all(sources.map(probeHTTP)).then(() => { busy = false; render(); }),
+    Promise.all(stunSources.map(probeSTUN)).then(() => { rtcBusy = false; render(); }),
+  ]);
+}
+
+function collectCandidate(result, candidate) {
+  const parts = (candidate.candidate || '').trim().split(/\s+/);
+  const type = candidate.type || parts[7] || 'unknown';
+  const relatedIndex = parts.indexOf('raddr', 8);
+  const values = [
+    { value: candidate.address, role: 'candidate' },
+    { value: parts[4], role: 'candidate' },
+    { value: candidate.relatedAddress, role: 'related' },
+    { value: relatedIndex >= 0 ? parts[relatedIndex + 1] : null, role: 'related' },
+  ];
+  values.forEach(({ value, role }) => {
+    const ip = normalizeIP(value);
+    if (ip && !result.addresses.some(x => x.ip === ip && x.type === type && x.role === role)) {
+      result.addresses.push({ ip, type, role, scope: addressScope(ip) });
+    }
+  });
+  scheduleCountries();
+  return values.some(x => typeof x.value === 'string' && x.value.endsWith('.local'));
 }
 
 function probeSTUN(source) {
@@ -134,9 +229,16 @@ function probeSTUN(source) {
     const start = performance.now(); let pc; let done = false; let hidden = false;
     const finish = message => {
       if (done) return; done = true; clearTimeout(timer);
-      if (pc) { pc.onicecandidate = null; pc.onicegatheringstatechange = null; pc.close(); }
+      if (pc) {
+        // Also inspect the final local SDP so candidate event timing cannot omit addresses.
+        const sdp = pc.localDescription ? pc.localDescription.sdp || '' : '';
+        sdp.split(/\r?\n/).filter(line => line.startsWith('a=candidate:')).forEach(line => {
+          hidden = collectCandidate(result, { candidate: line.slice(2) }) || hidden;
+        });
+        pc.onicecandidate = null; pc.onicegatheringstatechange = null; pc.close();
+      }
       result.status = result.addresses.length ? 'ok' : 'error';
-      result.detail = message || (hidden ? '候选地址受 mDNS 隐藏，未取得数字 IP' : '未取得候选 IP；可能受 UDP / 隐私设置限制');
+      result.detail = message || (result.addresses.length ? (hidden ? '部分候选地址受 mDNS 隐藏' : '') : hidden ? '候选地址受 mDNS 隐藏，未取得数字 IP' : '未取得候选 IP；可能受 UDP / 隐私设置限制');
       result.ms = Math.round(performance.now() - start); render(); resolve();
     };
     const timer = setTimeout(() => finish(), 10000);
@@ -144,15 +246,7 @@ function probeSTUN(source) {
       pc = new RTCPeerConnection({ iceServers: [{ urls: source.url }], iceCandidatePoolSize: 0 });
       pc.onicecandidate = event => {
         if (!event.candidate) { finish(); return; }
-        const candidate = event.candidate;
-        const parts = candidate.candidate.trim().split(/\s+/);
-        const raw = candidate.address || parts[4] || '';
-        if (raw.endsWith('.local')) hidden = true;
-        const ip = normalizeIP(raw);
-        const type = candidate.type || parts[7] || 'unknown';
-        if (ip && !result.addresses.some(x => x.ip === ip && x.type === type)) {
-          result.addresses.push({ ip, type, scope: addressScope(ip) }); render();
-        }
+        hidden = collectCandidate(result, event.candidate) || hidden; render();
       };
       pc.onicegatheringstatechange = () => { if (pc.iceGatheringState === 'complete') finish(); };
       pc.createDataChannel('ip-observation');
@@ -161,21 +255,13 @@ function probeSTUN(source) {
   });
 }
 
-async function runRTC() {
-  if (busy || rtcBusy) return;
-  rtcBusy = true; render();
-  await Promise.all(stunSources.map(probeSTUN));
-  rtcBusy = false; render();
-}
-
 byId('refresh').addEventListener('click', refresh);
-byId('rtc').addEventListener('click', runRTC);
 byId('copy').addEventListener('click', async () => {
-  try { await navigator.clipboard.writeText(byId('copy').dataset.ip); setText('notice', '地址已复制。'); }
+  try { await navigator.clipboard.writeText(byId('copy').dataset.ips); setText('notice', '全部已观测地址已复制，每行一个 IP。'); }
   catch (_) { setText('notice', '浏览器未允许复制，请选中地址手动复制。'); }
 });
 byId('export').addEventListener('click', () => {
-  const report = { measuredAt: measuredAt.toISOString(), note: 'Observed network addresses; not proof of an underlying IP or VPN leak.', results: [...results, ...rtcResults].map(({ name, channel, status, addresses, ms, detail }) => ({ name, channel, status, addresses, ms, detail })) };
+  const report = { measuredAt: measuredAt.toISOString(), note: 'Observed network addresses; not proof of an underlying IP or VPN leak. Country is approximate IP geolocation, not a person’s location.', addresses: allAddresses().map(address => ({ ...address, country: countryInfo(address.ip) })), results: [...results, ...rtcResults].map(({ name, channel, status, addresses, ms, detail }) => ({ name, channel, status, addresses: addresses.map(address => ({ ...address, country: countryInfo(address.ip) })), ms, detail })) };
   const url = URL.createObjectURL(new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' }));
   const link = document.createElement('a'); link.href = url; link.download = 'ip-observation.json'; document.body.append(link); link.click(); link.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
