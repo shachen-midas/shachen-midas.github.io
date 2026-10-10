@@ -7,3 +7,5 @@
 .address-card strong{display:block;font:17px var(--mono);line-height:1.65;color:var(--lime);overflow-wrap:anywhere}
 .address-card p{font-size:10px;line-height:1.8;color:var(--muted);margin:9px 0 0;overflow-wrap:anywhere}
 .source-address+.source-address{margin-top:14px}
+
+.evidence-tag{display:block;margin-top:8px;color:#b4cb99;font-size:10px;line-height:1.8}
