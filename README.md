@@ -4,7 +4,7 @@ A buildless, browser-only network observation page for **https://shachen-midas.g
 
 ## Automatic coverage
 
-Version `20261010-6` runs **53 jobs** on every visit or full refresh. These are endpoint/configuration combinations, including several request contexts and connectivity-only checks.
+Version `20261010-7` runs **58 jobs** on every visit or full refresh, with **two additional first-party comparisons** available through navigation buttons. Jobs are endpoint/configuration combinations, including request contexts and connectivity-only checks.
 
 | Group | Jobs | What is observed |
 | --- | ---: | --- |
@@ -15,8 +15,11 @@ Version `20261010-6` runs **53 jobs** on every visit or full refresh. These are 
 | Script / iframe | 3 | ipify IPv4, IPv6 and dual stack using JSONP inside an opaque-origin sandbox. |
 | Dedicated Worker | 2 | ipify and Cloudflare requests from a worker. |
 | Service Worker | 1 | Two fixed endpoints from a temporary worker scoped to `/workers/`. |
-| WebSocket | 2 | Small challenge echoes over WSS at WebSocket.org and NetOkay. These services do not return the client IP. |
-| WebTransport | 2 | Small QUIC datagram echoes at Semantic Echo on ports 443 and 4438. These services do not return the client IP. |
+| WebSocket | 3 | OnSIP's SIP `Via.received` source reflection, plus small challenge echoes at WebSocket.org and NetOkay. The two echo services do not return the client IP. |
+| WebTransport | 3 | WTCheck's source address stream over QUIC on port 4433, plus small Semantic Echo datagram echoes on ports 443 and 4438. The two echo services do not return the client IP. |
+| Connected WebRTC peer | 1 | A data-only connection to the public Janus EchoTest demo, collecting local candidates and the selected local path after a verified echo. |
+| Embedded page context | 1 | An HTTPBin iframe runs a same-origin `/ip` request, for comparison with this page's cross-origin Fetch. |
+| Resource receipts | 1 | YiteAI's temporary observer correlates Fetch, image and iframe requests. Its public collector currently has a TLS availability issue; failure is shown explicitly. |
 
 The user selected existing public services only: no paid resources, new hosting accounts, backend deployment, or private API credentials.
 
@@ -24,7 +27,15 @@ Every observed connection address stays visible with its country flag and all so
 
 ### HTTP protocol evidence
 
-Cloudflare trace `http=`, NetOkay `http_protocol`, and available Resource Timing `nextHopProtocol` fields are retained. Only an actual `h3` observation is labeled HTTP/3. Ordinary Fetch does not force HTTP/3 and a missing protocol field does not imply that it was unused. The WebTransport probes require unreliable transport and verify one small datagram echo; they never perform a bandwidth test.
+Cloudflare trace `http=`, NetOkay `http_protocol`, and available Resource Timing `nextHopProtocol` fields are retained. Only an actual `h3` observation is labeled HTTP/3. Ordinary Fetch does not force HTTP/3 and a missing protocol field does not imply that it was unused. WebTransport requires unreliable transport: WTCheck supplies a source address on an incoming unidirectional stream, while the two Semantic Echo jobs verify one small datagram echo. No bandwidth test runs.
+
+### Transport source reflection and resource receipts
+
+OnSIP uses its public SIP.js demo WSS endpoint with the `sip` subprotocol. One `OPTIONS` request has `Max-Forwards: 0`, so it addresses only that endpoint and is not forwarded. No call, registration, account or authentication is involved. Only the first Via's `received` parameter in a response matching the random Call-ID, branch and CSeq is accepted. The server's intentional `483` response can still carry this source address. The sent-by hostname and ordinary echo text are not source addresses.
+
+WTCheck's published browser client identifies `https://webt.wtcheck.top:4433/webtransport` as its source-IP service. This page reads its incoming stream with a 512-byte limit and the normal browser certificate checks. It does not substitute a Fetch IP when WebTransport fails.
+
+YiteAI's public client documents a random-token collector at `https://dev.yiteai.com`. The collector must respond over HTTPS before this page dispatches any correlated resource requests. Only known channel receipts are consumed; a resource load event by itself is never an IP observation. During integration research on 2026-10-10, the collector's TLS certificate was expired. The job therefore reports unavailability until the public service is repaired; no certificate bypass or insecure fallback is used. The provider's client demonstrates Fetch and image channels; acceptance of the additional iframe channel remains unconfirmed.
 
 ### DNS evidence
 
@@ -44,25 +55,31 @@ Open Relay's `staticauth.openrelay.metered.ca` uses the provider's intentionally
 
 IPv4-mapped IPv6, 6to4 and Teredo encodings are also examined locally. A 6to4 gateway IPv4 or Teredo client mapped IPv4 is shown as a derived hint with its parent IPv6, never as a separately observed connection. The Teredo server field is not extracted as a client address. No prefixes are guessed for arbitrary IPv6 addresses.
 
+The additional Janus job creates an ephemeral session and a data channel, exchanges SDP with the public EchoTest plugin, and verifies one random challenge response. No microphone, camera or media stream is used. Local candidate events and local-candidate statistics are retained, including the selected local path when available; remote peer addresses are excluded. Candidates already obtained survive a connection failure as partial evidence. This exchange sends Janus the local SDP, including ICE addresses discovered through STUN. Cleanup closes the peer connection and requests session destruction; the public demo also advertises a 60-second idle session timeout. Session identifiers and SDP are not exported.
+
 ### Request contexts and lifecycle
 
 Third-party JSONP executes only inside a sandbox with `allow-scripts` and no same-origin permission. Its CSP permits the fixed IP providers; it cannot read the parent page. The parent checks the exact frame window, opaque origin, per-probe nonce and asset version before accepting a result. The script request is anonymous.
 
+HTTPBin's documented `/base64/` HTML response renders a small diagnostic page that requests `/ip` from its own origin. An embedded HTTPS context runs automatically. Two buttons launch first-party HTTPS and HTTP contexts; browsers require a user gesture for these new windows. Each result records the requested scheme and the actual document/request schemes, so an HTTP-to-HTTPS upgrade is not counted as an HTTP observation. HTTPBin's `origin` chain remains an unverified reported address, consistent with its existing Fetch result.
+
+The diagnostic page returns a bounded result in a URL fragment to this site's `context-probe.html`. Fragments are not sent in HTTP requests, and the callback clears it immediately. Iframes return results using source- and origin-checked `postMessage`; first-party windows use a nonce-specific, ephemeral BroadcastChannel. The popup's opener is detached before third-party navigation, and its control handle is closed on success, failure, stop or timeout. No return tokens or results are written to application storage.
+
 Dedicated workers are terminated after their result or deadline. The Service Worker has a separate `/workers/` scope, no fetch handler, no caches, and no control over the main page. Its existing scope is checked before registration to avoid replacing an unrelated worker. The registration is removed on completion or cancellation; pagehide aborts active work. Registration cleanup is best effort if a browser terminates a page before a pending registration resolves. No visitor observations are persisted by the worker.
 
-HTTP and ICE queues each allow at most four active jobs, and other probes at most two. Country lookups have a separate three-request limit. HTTP deadlines are nine seconds; explicit STUN DNS resolution is bounded to five seconds, ICE gathering to ten seconds (three for the comparison), and final stats to one second. Extended jobs have a fifteen-second deadline; worker network requests use seven seconds. Stopping a run cancels queued/active work and keeps the results already obtained. Every job has a terminal state.
+HTTP and ICE queues each allow at most four active jobs, and the other automatic probes at most two. One user-triggered first-party comparison can run alongside those queues. Country lookups have a separate three-request limit. HTTP deadlines are nine seconds; explicit STUN DNS resolution is bounded to five seconds, ICE gathering to ten seconds (three for the comparison), and final stats to one second. Other automatic jobs have a fifteen-second deadline except the connected Janus job, which has 22 seconds. First-party navigation has 30 seconds, with an eight-second `/ip` request inside the diagnostic page. Worker network requests use seven seconds. Stopping a run cancels queued/active work and keeps the results already obtained. Every job has a terminal state.
 
 ## Address interpretation and privacy
 
 Country flags are approximate IP database assignments, not a person's location. Countries come from country.is, not from the name of a STUN provider. Unknown countries use a globe, local/shared/documentation addresses a house, and unspecified placeholders a neutral marker. Public observed and derived addresses are sent to country.is; local/shared/documentation addresses are not. Country lookup failure never removes an address.
 
-The application has no visitor database, analytics, cookies, localStorage, IndexedDB, or CacheStorage. Observations and temporary session identifiers stay in page memory; an export is created only on the visitor's request. Public services see their own connections or DNS queries and may retain records. GitHub and provider platform logs are outside this application's storage. No request sends one provider the other providers' observations, except that public addresses are sent to country.is for flags.
+The application has no visitor database, analytics, cookies, localStorage, IndexedDB, or CacheStorage. Observations and temporary session identifiers stay in page memory, except for the short-lived context return fragment described above; an export is created only on the visitor's request. Public services see their own connections or DNS queries and may retain records. Janus receives local ICE addresses through SDP; country.is receives public addresses for flags; YiteAI's collector, when available, records its resource requests under a random token. Provider retention and GitHub's access logs are outside this application's storage. A first-party visit may use the browser's existing cookies for that public provider, but this application does not read them.
 
 Origin/forwarding chains remain explicitly unverified: upstream services or proxies can populate headers. IP-literal requests still follow the browser's effective routing configuration. Extra-exit comparison uses the same address family and excludes resolvers, ECS networks, relay servers and derived hints.
 
 ### Remaining coverage boundaries
 
-- WSS and WebTransport currently provide genuine protocol reachability, with **no IP returned**. A public service that deliberately reflects the transport peer is required to add those IP observations; an ordinary echo cannot supply them.
+- OnSIP supplies a WSS source field; WTCheck supplies a WebTransport source stream. The separate generic echo jobs still report connectivity only. YiteAI resource receipts currently depend on repair of the public collector's TLS configuration.
 - Generic LAN/router enumeration is not implemented. Reading a device's WAN address requires that device's supported interface and browser local-network/CORS permissions.
 - Direct Sockets belongs to installed Isolated Web Apps, not this ordinary page. There are no browser extensions, native helpers, device capture requests, geolocation prompts or browser-exploit paths.
 - This app cannot inspect GitHub's own request logs. It uses public reflection services instead.
@@ -71,7 +88,8 @@ Origin/forwarding chains remain explicitly unverified: upstream services or prox
 
 Publish only these files:
 
-- `index.html`, `app.js`, `probes.js`, `style.css`, `favicon.svg`
+- `index.html`, `app.js`, `probes.js`, `peer-probe.js`, `style.css`, `favicon.svg`
+- `context-probe.html`, `context-probe.js`
 - `resource-probe.html`, `resource-probe.js`, `workers/network.js`
 - `.nojekyll`, `.gitignore`, `README.md`
 
@@ -80,17 +98,21 @@ No build or package installation is required. The canonical syntax check is:
 ```sh
 node --check app.js
 node --check probes.js
+node --check peer-probe.js
+node --check context-probe.js
 node --check resource-probe.js
 node --check workers/network.js
 ```
 
 Keep asset versions in the HTML, main script, probe module, sandbox response and worker response consistent. Query strings version all scripts/styles/worker registrations. A main HTML/module/script mismatch presents a reload action instead of starting incompatible code. The iframe CSP explicitly includes this site's public script URL because sandboxed origins may not match `self`; update it when forking to another origin.
 
-JSON export is schema version 2. Existing `addresses` and `results` arrays remain; address `group`, evidence roles, protocol, source ID and asset version make the additional observations distinguishable. Consumers must not treat every address as a visitor exit.
+JSON export remains schema version 2. Existing `addresses` and `results` arrays remain; address `group`, evidence roles, protocol, source ID and asset version make observations distinguishable. Context schemes, manual-trigger flags and selected-local-candidate flags are additive fields. Consumers must not treat every address as a visitor exit.
+
+Integration evidence for this revision: the OnSIP WSS response contained a matching `Via.received` field; HTTPBin returned the intended HTML for URL-safe Base64; Janus advertised unauthenticated data-channel support and CORS; YiteAI failed normal TLS validation. WTCheck's stream contract and Janus's echo format were inspected in their public client/source. The full browser detection sequence, live Janus peer exchange and WebTransport session were not executed during this revision.
 
 ## Deployment and recovery
 
-Target: `shachen-midas/shachen-midas.github.io`; user site `https://shachen-midas.github.io/`; Pages serves `master` at `/`. The pre-expansion recovery source is commit `8558e90b9b870d902989b7264f46b6656eb03ed9`. To undo this expansion, revert its commit and push to the same branch. Do not reset or force-push unrelated changes.
+Target: `shachen-midas/shachen-midas.github.io`; user site `https://shachen-midas.github.io/`; Pages serves `master` at `/`. The pre-revision recovery source is commit `41cad03909b84edd80f8da8fbc9c1b64a7d8765c`. To undo this revision, revert its commit and push to the same branch. Do not reset or force-push unrelated changes.
 
 Never commit credentials, machine settings, visitor reports, actual IP captures or account secrets. Public provider configuration facts and the documented Open Relay demo value are the only authentication-related material in source.
 
@@ -98,6 +120,9 @@ Never commit credentials, machine settings, visitor reports, actual IP captures 
 
 - [IP-API DNS API](https://ip-api.com/docs/dns), [bash.ws official client](https://github.com/macvk/dnsleaktest), [EDNS Client Subnet](https://www.rfc-editor.org/rfc/rfc7871.html)
 - [Public WebSocket echo source](https://github.com/ably/echo.websocket.org), [NetOkay browser checks](https://netokay.net/connection-checks.js), [Semantic Echo service/source](https://github.com/jlukic/semantic-echo)
+- [SIP.js public demo](https://github.com/onsip/SIP.js/blob/main/demo/demo-1.ts), [SIP over WebSocket](https://www.rfc-editor.org/rfc/rfc7118.html), [WTCheck public client](https://wtcheck.top/)
+- [Janus REST API](https://janus.conf.meetecho.com/docs/rest), [Janus EchoTest](https://janus.conf.meetecho.com/docs/echotest.html), [EchoTest source](https://github.com/meetecho/janus-gateway/blob/master/src/plugins/janus_echotest.c)
+- [HTTPBin response API](https://httpbin.org/), [YiteAI public IP leak client](https://tools.yiteai.com/en/tools/ip-leak-test)
 - [Open Relay public configuration](https://www.metered.ca/tools/openrelay/), [Cloudflare supported HTTPS ports](https://developers.cloudflare.com/fundamentals/reference/network-ports/)
 - [IPPure WebRTC configuration](https://ippure.com/assets/chunks/webrtc.B2iVidua.js), [IPPure geolocation module](https://ippure.com/assets/chunks/useFastIPInfo.BWfKblf_.js)
 - [WebRTC IP handling](https://www.rfc-editor.org/rfc/rfc8828.html), [local-candidate statistics](https://developer.mozilla.org/en-US/docs/Web/API/RTCIceCandidateStats)

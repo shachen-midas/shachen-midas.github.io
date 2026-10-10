@@ -1,8 +1,13 @@
 /* Fixed public diagnostic endpoints. No account keys or visitor persistence. */
 (() => {
 'use strict';
-const version = '20261010-6';
+const version = '20261010-7';
 const sources = [
+  { id: 'ws-source', name: 'OnSIP · WSS 来源地址', channel: 'WSS / SIP RECEIVED', kind: 'sip-source' },
+  { id: 'wt-source', name: 'WTCheck · QUIC 来源地址', channel: 'WEBTRANSPORT / SOURCE IP', kind: 'webtransport-source' },
+  { id: 'peer-janus', name: 'Janus · 真实 WebRTC 对端', channel: 'WEBRTC / CONNECTED PEER', kind: 'peer', timeout: 22000 },
+  { id: 'context-embedded', name: 'HTTPBin · iframe 内请求', channel: 'HTTPS / EMBEDDED CONTEXT', kind: 'context', contextKind: 'embedded' },
+  { id: 'resource-receipts', name: 'YiteAI · 资源访问回执', channel: 'HTTPS / SERVER RECEIPTS', kind: 'resource-receipts' },
   { id: 'dns-edns', name: 'IP-API · DNS / ECS', channel: 'DNS / RANDOM NAME', kind: 'edns' },
   { id: 'dns-bash', name: 'bash.ws · DNS 多次采样', channel: 'DNS / FETCH + IMAGE + PREFETCH', kind: 'dns' },
   { id: 'xhr-dual', name: 'XHR · 双栈出口', channel: 'HTTPS / XHR', kind: 'xhr', url: 'https://api64.ipify.org?format=json', format: 'json' },
@@ -54,28 +59,57 @@ function missing(message) { const error = new Error(message); error.unsupported 
 function run(source, outerSignal) {
   return new Promise(resolve => {
     const controller = new AbortController(); const cleanup = [];
-    let ended = false;
+    let ended = false; let saved = []; let savedDetail = '';
+    const failure = (status, detail) => ({ status: status === 'error' && saved.length ? 'partial' : status,
+      addresses: saved, detail: [detail, saved.length ? savedDetail : ''].filter(Boolean).join('；') });
     const finish = value => {
       if (ended) return; ended = true;
       clearTimeout(timer); outerSignal.removeEventListener('abort', cancel);
       controller.abort(); cleanup.forEach(fn => { try { fn(); } catch (_) {} });
       resolve(value);
     };
-    const cancel = () => finish({ status: 'cancelled', detail: '本轮已停止', addresses: [] });
-    const timer = setTimeout(() => finish({ status: 'error', detail: '检测超时（15 秒）', addresses: [] }), 15000);
+    const cancel = () => finish(failure('cancelled', '本轮已停止'));
+    const duration = source.timeout || 15000;
+    const timer = setTimeout(() => finish(failure('error', `检测超时（${duration / 1000} 秒）`)), duration);
     outerSignal.addEventListener('abort', cancel, { once: true });
     if (outerSignal.aborted) { cancel(); return; }
-    const context = { signal: controller.signal, cleanup, active: () => !ended };
-    Promise.resolve().then(() => execute(source, context)).then(finish, error => finish({
-      status: error.unsupported ? 'unsupported' : 'error', addresses: [],
-      detail: error.name === 'AbortError' ? '检测已中止' : error instanceof TypeError ? '网络 / 跨域 / 浏览器限制' : error.message,
-    }));
+    const context = { signal: controller.signal, cleanup, active: () => !ended, randomID, requestJSON,
+      partial: (addresses, detail) => { if (!ended) { saved = addresses.slice(0, 128); savedDetail = detail || ''; } } };
+    Promise.resolve().then(() => execute(source, context)).then(finish, error => finish(failure(
+      error.unsupported ? 'unsupported' : 'error', error.name === 'AbortError' ? '检测已中止' : error instanceof TypeError ? '网络 / 跨域 / 浏览器限制' : error.message)));
   });
 }
 
 async function execute(source, context) {
   const { signal, cleanup, active } = context;
   if (!active()) throw new Error('检测已中止');
+  if (source.kind === 'peer') return window.IPObservatoryPeer.run(context);
+  if (source.kind === 'context') return window.IPObservatoryContext.run(source, context);
+  if (source.kind === 'resource-receipts') return resourceReceipts(context);
+  if (source.kind === 'sip-source') return sipSource(context);
+  if (source.kind === 'webtransport-source') {
+    if (!window.WebTransport) throw missing('当前浏览器不支持 WebTransport');
+    const transport = new WebTransport('https://webt.wtcheck.top:4433/webtransport', { requireUnreliable: true });
+    transport.closed.catch(() => {});
+    cleanup.push(() => { try { transport.close(); } catch (_) {} });
+    await transport.ready;
+    if (!active()) throw new Error('WebTransport 已中止');
+    const incoming = transport.incomingUnidirectionalStreams.getReader();
+    cleanup.push(() => incoming.cancel().catch(() => {}));
+    const item = await incoming.read();
+    if (!active()) throw new Error('WebTransport 已中止');
+    if (item.done || !item.value) throw new Error('服务未提供来源地址流');
+    const reader = item.value.getReader(); cleanup.push(() => reader.cancel().catch(() => {}));
+    const decoder = new TextDecoder(); let text = ''; let bytes = 0;
+    while (active()) {
+      const chunk = await reader.read(); if (chunk.done) break;
+      bytes += chunk.value.byteLength; if (bytes > 512) throw new Error('来源地址响应过大');
+      text += decoder.decode(chunk.value, { stream: true });
+    }
+    text += decoder.decode();
+    return { status: 'ok', addresses: [{ ip: text.trim(), role: 'connection', via: 'WebTransport / server unidirectional stream' }],
+      protocol: 'h3', detail: '来源地址由 WebTransport 服务端返回；普通 HTTPS 查询不会替代此结果' };
+  }
   if (source.kind === 'edns') {
     const data = await requestJSON(`https://${randomID()}.edns.ip-api.com/json`, signal);
     const addresses = [];
@@ -168,6 +202,79 @@ async function execute(source, context) {
     return { status: 'reachable', addresses: [], protocol: 'h3', detail: 'QUIC 数据报回声成功；该公开服务不回传连接来源 IP' };
   }
   throw new Error('未知检测通道');
+}
+
+function sipSource(context) {
+  const { cleanup, active } = context;
+  if (!window.WebSocket) throw missing('浏览器不支持 WebSocket');
+  return new Promise((resolve, reject) => {
+    const host = 'edge.sip.onsip.com'; const nonce = randomID();
+    const call = `${nonce}@ip-observatory.invalid`; const branch = `z9hG4bK${nonce}`;
+    const socket = new WebSocket(`wss://${host}`, 'sip');
+    cleanup.push(() => {
+      socket.onopen = socket.onmessage = socket.onerror = socket.onclose = null;
+      try { socket.close(1000, 'Observation complete'); } catch (_) {}
+    });
+    socket.onopen = () => {
+      if (!active()) return;
+      // OPTIONS with zero forwarding hops queries this public demo endpoint only.
+      const request = [`OPTIONS sip:${host} SIP/2.0`, `Via: SIP/2.0/WSS ip-observatory.invalid;branch=${branch};rport`,
+        'Max-Forwards: 0', `To: <sip:${host}>`, `From: <sip:probe@ip-observatory.invalid>;tag=${nonce}`,
+        `Call-ID: ${call}`, 'CSeq: 1 OPTIONS', 'Content-Length: 0', '', ''].join('\r\n');
+      try { socket.send(request); } catch (_) { reject(new Error('WSS 请求未能发送')); }
+    };
+    socket.onmessage = event => {
+      if (!active() || typeof event.data !== 'string') return;
+      const text = event.data;
+      if (text.length > 8192) { reject(new Error('WSS 来源响应过大')); return; }
+      const status = /^SIP\/2\.0 (\d{3})\b/.exec(text);
+      const responseCall = (/^(?:Call-ID|i):\s*([^\r\n]+)$/im.exec(text) || [])[1];
+      const sequence = /^CSeq:\s*1\s+OPTIONS\s*$/im.test(text);
+      if (!status || Number(status[1]) < 200 || responseCall !== call || !sequence) return;
+      const via = (/^(?:Via|v):\s*([^\r\n]+)$/im.exec(text) || [])[1] || '';
+      if (!via.split(';').some(part => part.trim() === `branch=${branch}`)) return;
+      const received = (/(?:^|;)\s*received=([^;,\s]+)/i.exec(via) || [])[1];
+      if (!received) { resolve({ status: 'reachable', addresses: [], protocol: 'wss', detail: 'WSS 服务已响应，但未回报 Via.received 来源地址' }); return; }
+      const ip = received.replace(/^\[|\]$/g, '');
+      resolve({ status: 'ok', protocol: 'wss', addresses: [{ ip, role: 'connection', via: 'SIP Via.received / WSS' }],
+        detail: `WSS 来源来自匹配本轮请求的 Via.received；SIP 响应 ${status[1]}` });
+    };
+    socket.onerror = () => reject(new Error('WSS 来源服务不可用'));
+    socket.onclose = () => reject(new Error('WSS 在来源回报前关闭'));
+  });
+}
+
+async function resourceReceipts(context) {
+  const { signal, cleanup, active, partial } = context;
+  const origin = 'https://dev.yiteai.com'; const token = randomID();
+  const collectURL = `${origin}/api/leak-collect?token=${token}`;
+  // Check the observer before dispatching resources. Expired TLS/CORS must fail closed.
+  try { const ready = await requestJSON(collectURL, signal); if (!Array.isArray(ready.entries)) throw new Error('Invalid observer'); }
+  catch (_) { throw new Error('公开资源回执服务不可用（TLS / CORS / 网络）；未取得资源来源 IP'); }
+  if (!active()) throw new Error('资源检测已停止');
+  const channels = { 'cross-fetch': 'Fetch no-cors', 'cross-img': 'Image', 'iframe': 'iframe navigation' };
+  const target = channel => `${origin}/api/leak-check?token=${token}&channel=${channel}`;
+  const image = new Image(); image.crossOrigin = 'anonymous'; image.referrerPolicy = 'no-referrer';
+  const frame = document.createElement('iframe'); frame.hidden = true; frame.title = '资源访问回执';
+  frame.sandbox = ''; frame.referrerPolicy = 'no-referrer'; frame.credentialless = true;
+  cleanup.push(() => { image.removeAttribute('src'); frame.remove(); });
+  image.src = target('cross-img'); frame.src = target('iframe'); document.body.append(frame);
+  fetch(target('cross-fetch'), { mode: 'no-cors', credentials: 'omit', referrerPolicy: 'no-referrer', cache: 'no-store', signal }).catch(() => {});
+  let addresses = []; let observed = new Set();
+  for (let attempt = 0; attempt < 3 && active(); attempt++) {
+    await new Promise(resolve => { const timer = setTimeout(resolve, attempt ? 1000 : 1200); cleanup.push(() => { clearTimeout(timer); resolve(); }); });
+    if (!active()) throw new Error('资源检测已停止');
+    const data = await requestJSON(collectURL, signal);
+    if (!Array.isArray(data.entries) || data.entries.length > 32) throw new Error('资源回执格式不匹配');
+    const entries = data.entries.filter(entry => entry && Object.prototype.hasOwnProperty.call(channels, entry.channel) && typeof entry.ip === 'string');
+    observed = new Set(entries.map(entry => entry.channel));
+    addresses = entries.map(entry => ({ ip: entry.ip, role: 'connection', via: `server receipt / ${channels[entry.channel]}` }));
+    partial(addresses, '保留服务端已回报的资源访问地址');
+    if (observed.size === Object.keys(channels).length) break;
+  }
+  const missing = Object.keys(channels).filter(channel => !observed.has(channel)).map(channel => channels[channel]);
+  return { status: missing.length ? 'partial' : 'ok', addresses,
+    detail: `按本轮随机编号读取服务端回执${missing.length ? `；未收到：${missing.join(' / ')}` : '；三个资源通道均有回执'}` };
 }
 
 async function dnsProbe(context) {

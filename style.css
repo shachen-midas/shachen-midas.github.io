@@ -16,3 +16,5 @@
 .clue-section .address-card strong{color:#b8dae1}
 .status.reachable{color:#9bcad5}.status.partial{color:#dfc391}
 .action-row{flex-wrap:wrap}.sources>.observation{margin-bottom:18px}
+
+.context-section{margin-top:32px;padding:24px;border:1px solid var(--line);border-radius:12px}.context-section .muted{line-height:1.9}.context-section .observation{overflow-wrap:anywhere}

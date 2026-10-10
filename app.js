@@ -2,7 +2,7 @@
 (() => {
 'use strict';
 
-const ASSET_VERSION = '20261010-6';
+const ASSET_VERSION = '20261010-7';
 
 function showStartupFailure() {
   const setIfPresent = (id, text) => { const node = document.getElementById(id); if (node) node.textContent = text; };
@@ -26,7 +26,8 @@ function showStartupFailure() {
 }
 
 // A cached HTML document must never initialize an incompatible application.
-if (document.documentElement.dataset.assetVersion !== ASSET_VERSION || !window.IPObservatoryProbes || window.IPObservatoryProbes.version !== ASSET_VERSION) {
+if (document.documentElement.dataset.assetVersion !== ASSET_VERSION ||
+    ![window.IPObservatoryProbes, window.IPObservatoryPeer, window.IPObservatoryContext].every(module => module && module.version === ASSET_VERSION)) {
   showStartupFailure();
   return;
 }
@@ -88,6 +89,7 @@ let networkResults = [];
 let busy = false;
 let rtcBusy = false;
 let networkBusy = false;
+let contextBusy = false;
 let runController = null;
 let measuredAt = null;
 const countries = new Map();
@@ -122,13 +124,14 @@ function addressLabel(address) {
   if (address.role === 'related') return `${address.type} 关联地址`;
   if (address.type === 'relay') return 'TURN 中继服务器（非访客地址）';
   if (address.type === 'srflx') return 'STUN 映射地址';
+  if (address.type === 'prflx') return '对端反射候选地址';
   if (address.type === 'host') return '浏览器接口地址';
   return address.type || 'HTTPS 出口';
 }
 
 function allResults() { return [...results, ...rtcResults, ...networkResults]; }
 function isClue(address) { return ['dns', 'ecs', 'embedded'].includes(address.role) || address.type === 'relay' && address.role !== 'related'; }
-function running() { return busy || rtcBusy || networkBusy; }
+function running() { return busy || rtcBusy || networkBusy || contextBusy; }
 
 function embeddedIPv4(ip) {
   if (!ip.includes(':')) return null;
@@ -154,7 +157,7 @@ function allAddresses() {
     const label = `${result.name} / ${addressLabel(address)}`;
     const entry = unique.get(key);
     if (!entry.sources.includes(label)) entry.sources.push(label);
-    entry.evidence.push({ source: result.id, channel: result.channel, role: address.role || 'https', type: address.type || null, via: address.via || 'response', protocol: address.protocol || result.protocol || null, direct: !!result.direct, derivedFrom: address.derivedFrom || null, encoding: address.encoding || null });
+    entry.evidence.push({ source: result.id, channel: result.channel, role: address.role || 'https', type: address.type || null, via: address.via || 'response', protocol: address.protocol || result.protocol || null, direct: !!result.direct, selected: !!address.selected, context: result.context || null, derivedFrom: address.derivedFrom || null, encoding: address.encoding || null });
   };
   allResults().forEach(result => (result.addresses || []).forEach(address => {
     add(result, address);
@@ -247,6 +250,7 @@ function renderCards(node, entries, emptyText) {
     if (entry.evidence.some(x => x.role === 'ecs')) labels.push('ECS 网段 · 非完整客户端地址');
     if (entry.evidence.some(x => x.role === 'embedded')) labels.push('IPv6 编码推导 · 尚未独立观测');
     if (entry.evidence.some(x => x.role === 'connection')) labels.push('连接出口');
+    if (entry.evidence.some(x => x.selected)) labels.push('真实对端选中路径');
     kinds.textContent = labels.join(' / ');
     card.append(value, kinds, provenance); node.append(card);
   });
@@ -287,7 +291,7 @@ function render() {
   byId('copy').disabled = !observed.length;
   byId('copy').dataset.ips = [...new Set(observed.map(x => x.ip))].join('\n');
   const completed = allResults().filter(x => !['queued', 'pending', 'idle'].includes(x.status)).length;
-  setText('observation-note', `${completed} / ${allResults().length} 项已结束 · ${ok} 个 HTTPS 来源已响应 · ${measuredAt.toLocaleTimeString('zh-CN', { hour12: false })} · 所有项目自动运行`);
+  setText('observation-note', `${completed} / ${allResults().length} 项已结束 · ${ok} 个 HTTPS 来源已响应 · ${measuredAt.toLocaleTimeString('zh-CN', { hour12: false })} · 默认 ${sources.length + stunSources.length + networkSources.length} 项自动运行`);
   const geoPending = observed.some(x => countries.has(x.ip) && countries.get(x.ip).status === 'pending');
   setText('run-status', running() ? '全面检测中' : geoPending ? '国家查询中' : runController && runController.signal.aborted ? '本轮已停止' : observed.length ? '本轮检测完成' : '暂未取得地址');
   const connections = observed.filter(x => x.group === 'connection'); const clues = observed.filter(x => x.group === 'clue');
@@ -295,9 +299,10 @@ function render() {
   renderCards(byId('all-addresses'), connections, running() ? '正在收集各条连接的地址…' : '本轮未取得连接地址。');
   setText('network-address-count', `${clues.length} 条 DNS / ECS / 中继 / 编码线索`);
   renderCards(byId('network-addresses'), clues, running() ? '正在观察 DNS、中继及地址编码…' : '本轮未取得网络线索。');
-  const rtcAddresses = [...new Set(rtcResults.flatMap(x => (x.addresses || []).filter(a => a.scope === 'public' && !isClue(a)).map(a => a.ip)))];
+  const peerResults = networkResults.filter(x => x.kind === 'peer');
+  const rtcAddresses = [...new Set([...rtcResults, ...peerResults].flatMap(x => (x.addresses || []).filter(a => a.scope === 'public' && !isClue(a)).map(a => a.ip)))];
   const rtcDone = rtcResults.some(x => x.status !== 'idle');
-  setText('rtc-summary', rtcAddresses.map(displayIP).join(' · ') || (rtcBusy ? '检测中…' : rtcDone ? '未观测到公网候选' : '准备检测'));
+  setText('rtc-summary', rtcAddresses.map(displayIP).join(' · ') || (rtcBusy || peerResults.some(x => ['queued', 'pending'].includes(x.status)) ? '检测中…' : rtcDone ? '未观测到公网候选' : '准备检测'));
   let comparison = busy ? '正在对照各来源的观测结果…' : !observedHTTP ? '常规 HTTPS 暂未返回可直接对照的出口地址。' : v4.length > 1 || v6.length > 1 ? '同一地址族出现多个 HTTPS 出口，可结合来源观察分流情况。' : '本轮已响应的常规 HTTPS 来源在同一地址族内结果一致。';
   if (!busy && !v6.length) comparison += ' 本轮未观察到 HTTPS IPv6 出口。';
   if (rtcAddresses.some(ip => !httpIPs.includes(ip))) comparison += ' WebRTC 还观察到了不同的公网候选地址。';
@@ -310,6 +315,12 @@ function render() {
   setText('protocol-summary', `已确认协议：${protocols.join(' / ') || (running() ? '等待响应' : '未观测到协议')}。${reachable ? ` ${reachable} 条回声通道已连通但未回传来源 IP。` : ''} HTTP/3 只在实际观测到 h3 时标记；不从服务名称推断。`);
   byId('refresh').disabled = running(); byId('stop').disabled = !running() && !geoPending;
   byId('export').disabled = running() || geoPending || !measuredAt;
+  ['context-https', 'context-http'].forEach(id => { byId(id).disabled = contextBusy || !runController || runController.signal.aborted; });
+  const contextRows = [results.find(x => x.id === 'bin'), ...networkResults.filter(x => x.kind === 'context')].filter(Boolean);
+  setText('context-summary', contextRows.map(result => {
+    const values = [...new Set(result.addresses.map(x => x.ip))].map(displayIP).join(' / ');
+    return `${result.id === 'bin' ? '第三方 Fetch 基准' : result.name}：${values || (['queued', 'pending'].includes(result.status) ? '等待结果' : '未取得地址')}`;
+  }).join('；') || '页面上下文对照准备中');
 }
 
 function httpProtocol(value) {
@@ -408,6 +419,7 @@ async function probeNetwork(source, signal) {
   try {
     const observed = await window.IPObservatoryProbes.run(source, signal);
     result.detail = observed.detail || ''; result.protocol = observed.protocol || null;
+    result.context = observed.context || null;
     const seen = new Set();
     result.addresses = (observed.addresses || []).flatMap(address => {
       const ip = normalizeIP(address.ip); if (!ip) return [];
@@ -558,6 +570,17 @@ async function probeSTUN(source, signal) {
 
 try {
 byId('refresh').addEventListener('click', () => refresh().catch(showStartupFailure));
+['https', 'http'].forEach(kind => byId(`context-${kind}`).addEventListener('click', () => {
+  if (contextBusy || !runController || runController.signal.aborted) return;
+  contextBusy = true;
+  const source = { id: `context-${kind}`, name: `HTTPBin · ${kind.toUpperCase()} 第一方对照`,
+    channel: 'TOP-LEVEL / USER NAVIGATION', kind: 'context', contextKind: kind, timeout: 30000, manual: true };
+  const previous = networkResults.findIndex(result => result.id === source.id);
+  const result = { ...source, status: 'queued', addresses: [] };
+  if (previous >= 0) networkResults[previous] = result; else networkResults.push(result);
+  setText('notice', '已请求打开第一方诊断页；结果将自动回传。若浏览器拦截新窗口，请允许此站点弹窗后重试。');
+  probeNetwork(source, runController.signal).finally(() => { contextBusy = false; render(); }).catch(showStartupFailure);
+}));
 byId('stop').addEventListener('click', () => {
   if (runController) runController.abort();
   countryQueue.length = 0;
@@ -576,7 +599,7 @@ byId('copy').addEventListener('click', async () => {
   catch (_) { setText('notice', '浏览器未允许复制，请选中地址手动复制。'); }
 });
 byId('export').addEventListener('click', () => {
-  const report = { schemaVersion: 2, assetVersion: ASSET_VERSION, measuredAt: measuredAt.toISOString(), note: 'Connection observations, DNS resolvers, ECS network hints and relay servers have separate roles. Reachable echo services do not report a client IP. Countries are IP database assignments.', addresses: allAddresses().map(address => ({ ...address, country: countryInfo(address.ip) })), results: allResults().map(({ id, name, channel, status, addresses, ms, detail, protocol }) => ({ id, name, channel, status, addresses: addresses.map(address => ({ ...address, country: countryInfo(address.ip) })), ms, detail, protocol })) };
+  const report = { schemaVersion: 2, assetVersion: ASSET_VERSION, measuredAt: measuredAt.toISOString(), note: 'Connection observations, DNS resolvers, ECS network hints and relay servers have separate roles. Reachable echo services do not report a client IP. Countries are IP database assignments.', addresses: allAddresses().map(address => ({ ...address, country: countryInfo(address.ip) })), results: allResults().map(({ id, name, channel, status, addresses, ms, detail, protocol, context, manual }) => ({ id, name, channel, status, addresses: addresses.map(address => ({ ...address, country: countryInfo(address.ip) })), ms, detail, protocol, context, manual: !!manual })) };
   const url = URL.createObjectURL(new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' }));
   const link = document.createElement('a'); link.href = url; link.download = 'ip-observation.json'; document.body.append(link); link.click(); link.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);

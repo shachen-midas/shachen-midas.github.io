@@ -1,6 +1,6 @@
 /* One fixed-purpose script for dedicated and temporary service workers. */
 'use strict';
-const VERSION = '20261010-6';
+const VERSION = '20261010-7';
 const ENDPOINTS = {
   ipify: 'https://api64.ipify.org?format=json',
   cloudflare: 'https://www.cloudflare.com/cdn-cgi/trace',
