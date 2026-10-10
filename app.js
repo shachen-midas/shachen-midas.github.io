@@ -2,7 +2,15 @@
 (() => {
 'use strict';
 
-const ASSET_VERSION = '20261010-8';
+const ASSET_VERSION = '20261010-9';
+
+// Retire query parameters from previously shared cache-bypassing page links.
+const pageURL = new URL(window.location.href);
+if (pageURL.searchParams.has('v') || pageURL.searchParams.has('reload')) {
+  pageURL.searchParams.delete('v');
+  pageURL.searchParams.delete('reload');
+  window.history.replaceState(window.history.state, '', pageURL.href);
+}
 
 function showStartupFailure() {
   const setIfPresent = (id, text) => { const node = document.getElementById(id); if (node) node.textContent = text; };
@@ -16,12 +24,7 @@ function showStartupFailure() {
     // Replace listeners from any partially completed initialization.
     const reloadButton = refreshButton.cloneNode(true);
     refreshButton.replaceWith(reloadButton);
-    reloadButton.addEventListener('click', () => {
-      const url = new URL(window.location.href);
-      url.searchParams.set('v', ASSET_VERSION);
-      url.searchParams.set('reload', String(Date.now()));
-      window.location.replace(url.href);
-    });
+    reloadButton.addEventListener('click', () => window.location.reload());
   }
 }
 
@@ -89,13 +92,10 @@ let networkResults = [];
 let busy = false;
 let rtcBusy = false;
 let networkBusy = false;
-let contextBusy = false;
-let accessBusy = false;
 let runController = null;
 let measuredAt = null;
 let roundNumber = 0;
 let roundReason = '';
-let manualSequence = 0;
 let monitor = null;
 const history = [];
 const countries = new Map();
@@ -108,7 +108,6 @@ function countryFlag(code) {
 }
 
 function countryInfo(ip) {
-  if (ip === '0.0.0.0' || ip === '::') return { flag: '⚪', label: '占位地址，无国家' };
   if (addressScope(ip) !== 'public') return { flag: '🏠', label: '本地 / 共享 / 保留地址，无国家' };
   const entry = countries.get(ip);
   if (!entry && runController && runController.signal.aborted) return { flag: '🌐', label: '国家未查询 / 已停止' };
@@ -125,7 +124,6 @@ function addressLabel(address) {
   if (address.role === 'dns') return 'DNS 解析器（非访客地址）';
   if (address.role === 'ecs') return 'ECS 网段线索（前缀长度未提供）';
   if (address.role === 'embedded') return `${address.encoding} 编码中的 IPv4（推导线索）`;
-  if (address.role === 'wan') return '设备报告的 WAN 地址（接口信息）';
   if (address.role === 'connection') return '该连接观察到的出口';
   if (address.role === 'forwarded') return `${address.header} 转发头线索（未验证）`;
   if (address.role === 'reported') return '服务报告的来源链（未验证）';
@@ -139,8 +137,8 @@ function addressLabel(address) {
 
 function allResults() { return [...results, ...rtcResults, ...networkResults]; }
 function observedResults() { return [...history.flatMap(round => round.results), ...allResults()]; }
-function isClue(address) { return ['dns', 'ecs', 'embedded', 'wan'].includes(address.role) || address.type === 'relay' && address.role !== 'related'; }
-function running() { return busy || rtcBusy || networkBusy || contextBusy || accessBusy; }
+function isClue(address) { return ['dns', 'ecs', 'embedded'].includes(address.role) || address.type === 'relay' && address.role !== 'related'; }
+function running() { return busy || rtcBusy || networkBusy; }
 function queuedResult(source) { return { ...source, round: roundNumber, reason: roundReason, status: 'queued', addresses: [] }; }
 function timeLabel(value) { return new Date(value).toLocaleTimeString('zh-CN', { hour12: false }); }
 
@@ -155,7 +153,8 @@ function embeddedIPv4(ip) {
   else if (parts[0] === 0x2001 && parts[1] === 0) { a = (~parts[6]) & 0xffff; b = (~parts[7]) & 0xffff; encoding = 'Teredo 客户端映射'; }
   else if (parts.slice(0, 5).every(x => x === 0) && parts[5] === 0xffff) { a = parts[6]; b = parts[7]; encoding = 'IPv4-mapped IPv6'; }
   else return null;
-  const value = `${a >> 8}.${a & 255}.${b >> 8}.${b & 255}`;
+  const value = normalizeIP(`${a >> 8}.${a & 255}.${b >> 8}.${b & 255}`);
+  if (!value) return null;
   return { ip: value, scope: addressScope(value), role: 'embedded', via: 'IPv6 address encoding', encoding, derivedFrom: ip };
 }
 
@@ -214,10 +213,13 @@ function normalizeIP(value) {
   if (typeof value !== 'string') return null;
   const ip = value.trim();
   if (/^(\d{1,3}\.){3}\d{1,3}$/.test(ip)) {
-    return ip.split('.').every(x => Number(x) <= 255 && String(Number(x)) === x) ? ip : null;
+    return ip !== '0.0.0.0' && ip.split('.').every(x => Number(x) <= 255 && String(Number(x)) === x) ? ip : null;
   }
   if (!ip.includes(':') || !/^[a-fA-F0-9:.]+$/.test(ip)) return null;
-  try { return new URL(`http://[${ip}]/`).hostname.slice(1, -1).toLowerCase(); }
+  try {
+    const normalized = new URL(`http://[${ip}]/`).hostname.slice(1, -1).toLowerCase();
+    return normalized === '::' || normalized === '::ffff:0:0' ? null : normalized;
+  }
   catch (_) { return null; }
 }
 
@@ -266,7 +268,6 @@ function renderCards(node, entries, emptyText) {
     if (entry.evidence.some(x => x.role === 'embedded')) labels.push('IPv6 编码推导 · 尚未独立观测');
     if (entry.evidence.some(x => x.role === 'connection')) labels.push('连接出口');
     if (entry.evidence.some(x => x.selected)) labels.push('真实对端选中路径');
-    if (entry.evidence.some(x => x.role === 'wan')) labels.push('设备 WAN 信息');
     kinds.textContent = labels.join(' / ');
     const timing = document.createElement('small'); timing.className = 'address-time';
     const rounds = [...new Set(entry.evidence.map(x => x.round))];
@@ -316,7 +317,7 @@ function render() {
   const connections = observed.filter(x => x.group === 'connection'); const clues = observed.filter(x => x.group === 'clue');
   setText('address-count', `${connections.length} 个连接地址 · 本页历次结果全部保留`);
   renderCards(byId('all-addresses'), connections, running() ? '正在收集各条连接的地址…' : '本轮未取得连接地址。');
-  setText('network-address-count', `${clues.length} 条 DNS / ECS / 中继 / 编码 / WAN 线索`);
+  setText('network-address-count', `${clues.length} 条 DNS / ECS / 中继 / 编码线索`);
   renderCards(byId('network-addresses'), clues, running() ? '正在观察 DNS、中继及地址编码…' : '本轮未取得网络线索。');
   const peerResults = networkResults.filter(x => x.kind === 'peer');
   const rtcAddresses = [...new Set([...rtcResults, ...peerResults].flatMap(x => (x.addresses || []).filter(a => a.scope === 'public' && !isClue(a)).map(a => a.ip)))];
@@ -335,20 +336,6 @@ function render() {
   const sampling = monitor && monitor.state();
   byId('refresh').disabled = running(); byId('stop').disabled = !running() && !geoPending && !(sampling && sampling.enabled);
   byId('export').disabled = running() || geoPending || !measuredAt;
-  ['context-https', 'context-http', 'context-ws'].forEach(id => { byId(id).disabled = contextBusy || accessBusy || !runController || runController.signal.aborted; });
-  ['permission-compare', 'local-read'].forEach(id => { byId(id).disabled = running() || !runController || runController.signal.aborted; });
-  const contextRows = [[...observedResults()].reverse().find(x => x.id === 'bin'), ...observedResults().filter(x => x.kind === 'context')].filter(Boolean);
-  setText('context-summary', contextRows.map(result => {
-    const values = [...new Set(result.addresses.map(x => x.ip))].map(displayIP).join(' / ');
-    return `第 ${result.round} 轮 ${result.id === 'bin' ? '第三方 Fetch 基准' : result.name}：${values || (['queued', 'pending'].includes(result.status) ? '等待结果' : '未取得地址')}`;
-  }).join('；') || '页面上下文对照准备中');
-  const permissionResult = [...observedResults()].reverse().find(result => result.kind === 'permission');
-  if (permissionResult) {
-    const added = permissionResult.permission && permissionResult.permission.added || [];
-    setText('permission-summary', `${permissionResult.detail}${added.length ? `：${added.map(displayIP).join('；')}` : ''}`);
-  }
-  const localResult = observedResults().find(result => result.id === byId('local-summary').dataset.sourceId);
-  if (localResult) setText('local-summary', localResult.addresses.length ? localResult.addresses.map(address => displayIP(address.ip)).join('；') : localResult.detail || (localResult.status === 'pending' ? '正在读取你指定的单个接口…' : '未取得 WAN 地址'));
   setText('sampling-summary', sampling && sampling.enabled ? `自动观察至 ${timeLabel(sampling.until)} · 定时补采 ${sampling.periodic} / 2 · 网络变化补采 ${sampling.events} / 3${sampling.paused ? ' · 等待页面回到前台并联网' : ''}${sampling.pending ? ` · 已排队：${sampling.pending}` : ''}` : runController && !runController.signal.aborted && (busy || rtcBusy || networkBusy) && ['打开页面', '手动全面检测'].includes(roundReason) ? '本轮全面检测完成后，将自动观察网络变化 5 分钟。' : '自动补采已停止；已取得的地址保留在当前页面。');
   const roundList = byId('round-list'); roundList.replaceChildren();
   [...history, { number: roundNumber, reason: roundReason, startedAt: measuredAt.toISOString(), results: allResults() }].forEach(round => {
@@ -611,85 +598,6 @@ async function probeSTUN(source, signal) {
   });
 }
 
-async function permissionCompare() {
-  if (running() || !runController || runController.signal.aborted) return;
-  accessBusy = true;
-  const sequence = ++manualSequence;
-  const request = queuedResult({ id: `permission-${sequence}`, name: 'WebRTC · 麦克风授权对照', channel: 'ICE / USER PERMISSION', kind: 'permission', manual: true });
-  request.status = 'pending'; request.detail = '等待你在浏览器中决定是否授予麦克风权限';
-  networkResults.push(request);
-  const before = [...new Set(observedResults().flatMap(result => result.addresses.filter(address => !isClue(address) && ['candidate', 'related'].includes(address.role)).map(address => address.ip)))];
-  const controller = new AbortController(); const parentSignal = runController.signal;
-  const cancel = () => controller.abort(); parentSignal.addEventListener('abort', cancel, { once: true });
-  let stream = null; let finished = false; let timedOut = false;
-  const start = performance.now();
-  let timer = setTimeout(() => { timedOut = true; controller.abort(); }, 30000);
-  const release = media => { if (media) media.getTracks().forEach(track => track.stop()); };
-  let abortWaiting;
-  try {
-    setText('permission-summary', request.detail); render();
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error('unsupported');
-    const acquisition = navigator.mediaDevices.getUserMedia({ audio: true, video: false }).then(media => {
-      media.getTracks().forEach(track => { track.enabled = false; });
-      if (finished || controller.signal.aborted) { release(media); throw new Error('cancelled'); }
-      stream = media; return media;
-    });
-    await Promise.race([acquisition, new Promise((_, reject) => {
-      abortWaiting = () => reject(new Error('cancelled'));
-      controller.signal.addEventListener('abort', abortWaiting, { once: true });
-      if (controller.signal.aborted) abortWaiting();
-    })]);
-    clearTimeout(timer); timer = setTimeout(() => { timedOut = true; controller.abort(); }, 25000);
-    request.permission = { kind: 'microphone', granted: true, before };
-    request.detail = '已授权，音轨已禁用；正在重新采集 ICE 候选'; setText('permission-summary', request.detail);
-    const jobs = stunSources.filter(source => ['host', 'bilibili', 'cloudflare', 'cf6'].includes(source.id)).map(source => ({ ...source,
-      id: `permission-${sequence}-${source.id}`, name: `${source.name} · 授权后`, manual: true, permission: 'microphone' }));
-    rtcResults.push(...jobs.map(queuedResult)); render();
-    await runLimited(jobs, source => probeSTUN(source, controller.signal), 2);
-    const ids = new Set(jobs.map(source => source.id));
-    const after = [...new Set(rtcResults.filter(result => ids.has(result.id)).flatMap(result => result.addresses.filter(address => !isClue(address)).map(address => address.ip)))];
-    request.permission.after = after;
-    request.permission.added = after.filter(ip => !before.includes(ip));
-    request.status = controller.signal.aborted ? 'cancelled' : 'ok';
-    request.detail = `${controller.signal.aborted ? timedOut ? '授权后采集已到时' : '对照已停止' : '授权对照完成'}；本页新增 ${request.permission.added.length} 个 ICE 地址；麦克风已释放`;
-    setText('permission-summary', `${request.detail}${request.permission.added.length ? `：${request.permission.added.map(displayIP).join('；')}` : ''}`);
-  } catch (error) {
-    request.status = parentSignal.aborted ? 'cancelled' : error.message === 'unsupported' ? 'unsupported' : 'error';
-    request.detail = timedOut ? '授权等待已到时；若稍后授权，设备会立即释放' : parentSignal.aborted ? '已停止授权对照；若稍后授权，设备会立即释放' : error.message === 'unsupported' ? '当前浏览器没有可用的媒体授权接口' : error.name === 'NotAllowedError' ? '未授予麦克风权限，已保留其他检测结果' : error.name === 'NotFoundError' ? '没有可用的麦克风设备' : '未能完成设备授权对照';
-    setText('permission-summary', request.detail);
-  } finally {
-    finished = true; release(stream); clearTimeout(timer);
-    parentSignal.removeEventListener('abort', cancel);
-    if (abortWaiting) controller.signal.removeEventListener('abort', abortWaiting);
-    request.ms = Math.round(performance.now() - start); accessBusy = false; render();
-    if (monitor) monitor.wake();
-  }
-}
-
-async function readLocalWAN() {
-  if (running() || !runController || runController.signal.aborted) return;
-  byId('local-summary').dataset.sourceId = '';
-  let url;
-  try {
-    url = new URL(byId('local-url').value.trim());
-    const host = url.hostname.replace(/^\[|\]$/g, '').toLowerCase();
-    const parts = host.split('.').map(Number);
-    const private4 = /^(\d+\.){3}\d+$/.test(host) && (parts[0] === 10 || parts[0] === 127 || parts[0] === 192 && parts[1] === 168 || parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31 || parts[0] === 169 && parts[1] === 254);
-    const private6 = host === '::1' || /^(fc|fd|fe[89ab])/.test(host) && host.includes(':');
-    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.hash || !(private4 || private6 || host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local'))) throw new Error('Invalid local target');
-    if (url.href.length > 2048) throw new Error('URL too long');
-  } catch (_) { setText('local-summary', '请输入已有只读接口的完整 HTTP(S) 地址，使用局域网 IP、localhost 或 .local 名称，不要包含账号密码。'); return; }
-  const field = byId('local-field').value.trim();
-  if (field && (field.length > 128 || !/^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+){0,7}$/.test(field))) { setText('local-summary', 'JSON 字段使用点分路径，例如 data.wan_ip；纯文本返回请留空。'); return; }
-  accessBusy = true;
-  const source = { id: `local-wan-${++manualSequence}`, name: '本地设备 · WAN 只读接口', channel: 'LOCAL / USER CONFIGURED', kind: 'local-wan', url: url.href, field, manual: true };
-  const result = queuedResult(source); networkResults.push(result); byId('local-summary').dataset.sourceId = source.id; setText('local-summary', '正在读取你指定的单个接口…');
-  try {
-    await probeNetwork(source, runController.signal);
-    setText('local-summary', result.addresses.length ? result.addresses.map(address => displayIP(address.ip)).join('；') : result.detail || '未取得 WAN 地址');
-  } finally { accessBusy = false; render(); if (monitor) monitor.wake(); }
-}
-
 function stopObservations() {
   if (monitor) monitor.stop();
   if (runController) runController.abort();
@@ -699,23 +607,12 @@ function stopObservations() {
   render();
 }
 
-function exportResult({ id, name, channel, status, addresses, ms, detail, protocol, context, manual, permission, round, reason }) {
-  return { id, name, channel, status, addresses: addresses.map(address => ({ ...address, country: countryInfo(address.ip) })), ms, detail, protocol, context, manual: !!manual, permission, round, reason };
+function exportResult({ id, name, channel, status, addresses, ms, detail, protocol, context, manual, round, reason }) {
+  return { id, name, channel, status, addresses: addresses.map(address => ({ ...address, country: countryInfo(address.ip) })), ms, detail, protocol, context, manual: !!manual, round, reason };
 }
 
 try {
 byId('refresh').addEventListener('click', () => refresh().catch(showStartupFailure));
-['https', 'http', 'ws'].forEach(kind => byId(`context-${kind}`).addEventListener('click', () => {
-  if (contextBusy || accessBusy || !runController || runController.signal.aborted) return;
-  contextBusy = true;
-  const source = { id: `context-${kind}-${++manualSequence}`, name: `${kind === 'ws' ? 'OnSIP · WS 入口' : `HTTPBin · ${kind.toUpperCase()} 第一方`}对照`,
-    channel: 'TOP-LEVEL / USER NAVIGATION', kind: 'context', contextKind: kind, timeout: 30000, manual: true };
-  networkResults.push(queuedResult(source));
-  setText('notice', '已请求打开第一方诊断页；结果将自动回传。若浏览器拦截新窗口，请允许此站点弹窗后重试。');
-  probeNetwork(source, runController.signal).finally(() => { contextBusy = false; render(); if (monitor) monitor.wake(); }).catch(showStartupFailure);
-}));
-byId('permission-compare').addEventListener('click', () => permissionCompare().catch(showStartupFailure));
-byId('local-read').addEventListener('click', () => readLocalWAN().catch(showStartupFailure));
 byId('stop').addEventListener('click', () => {
   stopObservations(); setText('notice', '已停止当前检测和后续自动补采，保留本页历次结果。');
 });
@@ -726,11 +623,11 @@ byId('copy').addEventListener('click', async () => {
 });
 byId('export').addEventListener('click', () => {
   const rounds = [...history, { number: roundNumber, reason: roundReason, startedAt: measuredAt.toISOString(), results: allResults() }];
-  const report = { schemaVersion: 3, assetVersion: ASSET_VERSION, measuredAt: measuredAt.toISOString(), note: 'Addresses aggregate every round in this page visit; results describe the latest round. DNS, ECS, relays, encoded hints and device-reported WAN addresses have separate roles. Countries are IP database assignments.', addresses: allAddresses().map(address => ({ ...address, country: countryInfo(address.ip) })), results: allResults().map(exportResult), rounds: rounds.map(round => ({ number: round.number, reason: round.reason, startedAt: round.startedAt, results: round.results.map(exportResult) })) };
+  const report = { schemaVersion: 3, assetVersion: ASSET_VERSION, measuredAt: measuredAt.toISOString(), note: 'Addresses aggregate every round in this page visit; results describe the latest round. DNS, ECS, relays and encoded hints have separate roles. Countries are IP database assignments.', addresses: allAddresses().map(address => ({ ...address, country: countryInfo(address.ip) })), results: allResults().map(exportResult), rounds: rounds.map(round => ({ number: round.number, reason: round.reason, startedAt: round.startedAt, results: round.results.map(exportResult) })) };
   const url = URL.createObjectURL(new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' }));
   const link = document.createElement('a'); link.href = url; link.download = 'ip-observation.json'; document.body.append(link); link.click(); link.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
-  setText('notice', '报告已导出，包含本页历次地址、轮次、时间及来源；不包含本地接口 URL。');
+  setText('notice', '报告已导出，包含本页历次地址、轮次、时间及来源。');
 });
 monitor = window.IPObservatorySampling.create({ available: () => !running(), collect: reason => refresh(reason, true), changed: () => { if (measuredAt) render(); } });
 window.addEventListener('online', () => monitor.networkChanged('网络恢复'));

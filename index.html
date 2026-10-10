@@ -1,20 +1,20 @@
 <!doctype html>
-<html lang="zh-CN" data-asset-version="20261010-8">
+<html lang="zh-CN" data-asset-version="20261010-9">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="自动对照 HTTPS、WebRTC、DNS、后台请求与网络协议，展示全部观测地址及国旗。">
   <meta name="referrer" content="no-referrer">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src https: http: wss://echo.websocket.org wss://netokay.net wss://edge.sip.onsip.com; img-src 'self' data: https://*.bash.ws https://dev.yiteai.com; frame-src 'self' https://httpbin.org https://dev.yiteai.com; worker-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src https: wss://echo.websocket.org wss://netokay.net wss://edge.sip.onsip.com; img-src 'self' data: https://*.bash.ws https://dev.yiteai.com; frame-src 'self' https://httpbin.org https://dev.yiteai.com; worker-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'">
   <meta name="theme-color" content="#101411">
   <title>IP Observatory · 看见你的网络出口</title>
   <link rel="icon" href="./favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="./style.css?v=20261010-8">
-  <script src="./context-probe.js?v=20261010-8" defer></script>
-  <script src="./peer-probe.js?v=20261010-8" defer></script>
-  <script src="./probes.js?v=20261010-8" defer></script>
-  <script src="./sampling.js?v=20261010-8" defer></script>
-  <script src="./app.js?v=20261010-8" defer></script>
+  <link rel="stylesheet" href="./style.css">
+  <script src="./context-probe.js" defer></script>
+  <script src="./peer-probe.js" defer></script>
+  <script src="./probes.js" defer></script>
+  <script src="./sampling.js" defer></script>
+  <script src="./app.js" defer></script>
 </head>
 <body>
   <div class="shell">
@@ -24,35 +24,16 @@
       <section class="reading" aria-labelledby="reading-title">
         <div class="section-top"><h2 id="reading-title">全部连接地址 <span>CONNECTION OBSERVATIONS</span></h2><span id="run-status" role="status">准备检测</span></div>
         <p id="address-count" class="address-count" role="status">等待检测程序启动…</p><div id="all-addresses" class="address-grid"></div>
-        <div class="clue-section"><h3>DNS / 网段 / 中继 / 编码 / WAN 线索</h3><p class="muted">包含解析器、ECS、中继、IPv6 编码中推导的 IPv4，以及手动读取的设备 WAN 信息，均标明角色和来源。</p><p id="network-address-count" class="address-count" role="status">等待网络线索…</p><div id="network-addresses" class="address-grid"></div></div>
+        <div class="clue-section"><h3>DNS / 网段 / 中继 / 编码线索</h3><p class="muted">包含解析器、ECS、中继和 IPv6 编码中推导的 IPv4，均标明角色和来源。</p><p id="network-address-count" class="address-count" role="status">等待网络线索…</p><div id="network-addresses" class="address-grid"></div></div>
         <p id="observation-note" class="muted">等待查询源响应。历次结果仅保留在本次打开的页面中。</p>
         <div class="metrics"><div><span>HTTPS / IPv4</span><strong id="ipv4">等待启动</strong></div><div><span>HTTPS / IPv6</span><strong id="ipv6">等待启动</strong></div><div><span>WebRTC / STUN</span><strong id="rtc-summary">等待启动</strong></div></div>
         <div class="action-row"><button id="refresh" class="button primary">重新全面检测 <span>↻</span></button><button id="stop" class="button secondary" disabled>停止检测与补采</button><button id="copy" class="button secondary" disabled>复制全部 IP <span>↗</span></button><button id="export" class="text-button" disabled>导出报告 ↓</button></div>
         <p id="sampling-summary" class="observation" role="status">首轮完成后自动观察网络变化。</p>
         <details class="round-history"><summary>本页检测轮次</summary><ol id="round-list"></ol></details>
-        <p class="disclosure">打开页面即自动运行 HTTPS / XHR、脚本资源、Worker、Service Worker、DNS / ECS、STUN / TURN、WSS 来源回报、WebTransport 来源回报和真实 WebRTC 对端检测，无需摄像头或麦克风。HTTPS / ICE 各最多并发 4 项，其他自动检测最多 2 项，另可手动运行 1 项第一方对照；每项都有超时。全面检测后自动观察 5 分钟，定时补采最多 2 轮、网络变化补采最多 3 轮，每轮选取 14 条路径；后台和离线时暂停新轮次。公开服务包括 ipify、Cloudflare、icanhazip、Amazon、HTTPBingo、HTTPBin、纯真查询、IP.SB、NetOkay、IP-API、bash.ws、WebSocket.org、Semantic Echo、Open Relay、OnSIP、WTCheck、Janus 和 YiteAI；STUN 另含 Bilibili、芒果、小米、Google。Google DNS 仅用于解析 STUN 目标。公网观测地址发送给 country.is 查询国旗，本地 / 保留地址不查询。Service Worker 使用临时独立作用域，完成后注销。Janus 会收到本轮 ICE 协商地址；YiteAI 会按临时随机编号记录自己的资源请求。</p>
-      </section>
-      <section class="context-section" aria-labelledby="context-title">
-        <div class="section-heading"><h2 id="context-title">页面上下文对照</h2><span class="mono">FIRST / THIRD PARTY</span></div>
-        <p class="muted">第三方 Fetch 和 iframe 内请求自动运行。第一方对照需要打开新标签页，由浏览器要求点击触发；结果自动返回。HTTP 入口若被升级为 HTTPS，会记录实际使用的协议；WS 对照会停止并显示升级原因。</p>
-        <div class="action-row"><button id="context-https" class="button secondary">打开 HTTPS 第一方对照 ↗</button><button id="context-http" class="button secondary">打开 HTTP 第一方对照 ↗</button><button id="context-ws" class="button secondary">打开 HTTP / WS 对照 ↗</button></div>
-        <p id="context-summary" class="observation" role="status">正在准备上下文对照…</p>
-      </section>
-      <section class="context-section" aria-labelledby="access-title">
-        <div class="section-heading"><h2 id="access-title">授权与本地设备对照</h2><span class="mono">USER-INITIATED CHECKS</span></div>
-        <p class="muted" id="permission-note">部分浏览器在授权后提供更多 ICE 候选。点击下方按钮会申请麦克风权限并暂时打开设备，音轨立即禁用，不录制或发送音频，检测结束后释放。其他检测不需要此权限。</p>
-        <button id="permission-compare" class="button secondary" aria-describedby="permission-note" disabled>授权麦克风并对照 ICE 候选</button>
-        <p id="permission-summary" class="observation" role="status">首轮完成后可进行授权对照。</p>
-        <details class="local-config"><summary>读取已有的本地 WAN 只读接口</summary>
-          <p class="muted">仅访问你填写的单个局域网接口，不扫描设备、不携带登录凭据。接口需允许网页读取；浏览器可能要求本地网络权限。请使用不含密码或令牌的只读 URL，输入内容不保存、不导出。</p>
-          <label>接口 URL<input id="local-url" type="url" placeholder="http://router.local/wan" autocomplete="off" spellcheck="false"></label>
-          <label>JSON 地址字段<input id="local-field" type="text" placeholder="例如 data.wan_ip；纯文本返回留空" autocomplete="off" spellcheck="false"></label>
-          <button id="local-read" class="button secondary" disabled>读取指定接口</button>
-          <p id="local-summary" class="observation" role="status">尚未配置。WAN 地址会作为设备信息单独标注。</p>
-        </details>
+        <p class="disclosure">打开页面即自动运行 HTTPS / XHR、脚本资源、Worker、Service Worker、DNS / ECS、STUN / TURN、WSS 来源回报、WebTransport 来源回报和真实 WebRTC 对端检测，无需摄像头或麦克风。HTTPS / ICE 各最多并发 4 项，其他自动检测最多 2 项；每项都有超时。全面检测后自动观察 5 分钟，定时补采最多 2 轮、网络变化补采最多 3 轮，每轮选取 14 条路径；后台和离线时暂停新轮次。公开服务包括 ipify、Cloudflare、icanhazip、Amazon、HTTPBingo、HTTPBin、纯真查询、IP.SB、NetOkay、IP-API、bash.ws、WebSocket.org、Semantic Echo、Open Relay、OnSIP、WTCheck、Janus 和 YiteAI；STUN 另含 Bilibili、芒果、小米、Google。Google DNS 仅用于解析 STUN 目标。公网观测地址发送给 country.is 查询国旗，本地 / 保留地址不查询。Service Worker 使用临时独立作用域，完成后注销。Janus 会收到本轮 ICE 协商地址；YiteAI 会按临时随机编号记录自己的资源请求。</p>
       </section>
       <section class="sources" aria-labelledby="sources-title"><div class="section-heading"><h2 id="sources-title"><span class="index">01 /</span> 每条路径，都有依据</h2><span class="mono">LIVE SOURCES</span></div><p id="protocol-summary" class="observation" role="status">正在观察 HTTP / QUIC 协议…</p><div class="table-wrap"><table><thead><tr><th>检测来源 / 通道</th><th>观察到的地址 / 证据</th><th>状态</th><th>耗时</th></tr></thead><tbody id="source-rows"></tbody></table></div><p id="path-summary" class="observation" role="status">正在准备路径对照…</p><p id="comparison" class="observation" role="status">正在对照各来源的观测结果…</p></section>
-      <section class="explain"><div><span class="index">02 / READING THE SIGNAL</span><h2>怎样看懂结果</h2><p>先对照相同地址族的连接出口，再查看每个地址来自哪条路径。DNS 解析器、ECS 网段与 TURN 中继各有单独标签。</p></div><div class="notes"><article><span>↗</span><div><h3>多个地址，可能来自不同路径</h3><p>国内外目标、IPv4 / IPv6、不同端口和后台请求可能触发不同的代理规则。所有返回地址都会保留，不挑选单个“主 IP”。</p></div></article><article><span>◎</span><div><h3>连通性与地址分别记录</h3><p>WSS / WebTransport 的来源回报与普通回声连通性分别标注。真实 WebRTC 对端会记录选中的本地候选。资源回执服务当前存在证书可用性问题，失败会单独显示。可在上方填写设备提供的 WAN 只读接口。</p></div></article><article><span>⌁</span><div><h3>结果留在当前页面</h3><p>本应用不持久保存检测历史，也不上传到站长数据库。公开服务会看到各自的连接或 DNS 查询；country.is 会收到待查公网地址。报告只在你点击导出时保存到你的设备。GitHub 和第三方服务可能保留访问日志。</p></div></article></div></section>
+      <section class="explain"><div><span class="index">02 / READING THE SIGNAL</span><h2>怎样看懂结果</h2><p>先对照相同地址族的连接出口，再查看每个地址来自哪条路径。DNS 解析器、ECS 网段与 TURN 中继各有单独标签。</p></div><div class="notes"><article><span>↗</span><div><h3>多个地址，可能来自不同路径</h3><p>国内外目标、IPv4 / IPv6、不同端口和后台请求可能触发不同的代理规则。所有返回地址都会保留，不挑选单个“主 IP”。</p></div></article><article><span>◎</span><div><h3>连通性与地址分别记录</h3><p>WSS / WebTransport 的来源回报与普通回声连通性分别标注。真实 WebRTC 对端会记录选中的本地候选。资源回执服务当前存在证书可用性问题，失败会单独显示。</p></div></article><article><span>⌁</span><div><h3>结果留在当前页面</h3><p>本应用不持久保存检测历史，也不上传到站长数据库。公开服务会看到各自的连接或 DNS 查询；country.is 会收到待查公网地址。报告只在你点击导出时保存到你的设备。GitHub 和第三方服务可能保留访问日志。</p></div></article></div></section>
       <noscript><p class="observation">此检测需要 JavaScript。请启用后重新加载页面。</p></noscript>
       <p id="notice" class="notice" role="status">若检测长时间未启动，请重新加载页面，并确认浏览器允许 JavaScript。</p>
     </main>

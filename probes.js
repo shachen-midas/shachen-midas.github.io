@@ -1,7 +1,7 @@
 /* Fixed public diagnostic endpoints. No account keys or visitor persistence. */
 (() => {
 'use strict';
-const version = '20261010-8';
+const version = '20261010-9';
 const sources = [
   { id: 'ws-source', name: 'OnSIP · WSS 来源地址', channel: 'WSS / SIP RECEIVED', kind: 'sip-source' },
   { id: 'wt-source', name: 'WTCheck · QUIC 来源地址', channel: 'WEBTRANSPORT / SOURCE IP', kind: 'webtransport-source' },
@@ -87,22 +87,6 @@ async function execute(source, context) {
   if (source.kind === 'context') return window.IPObservatoryContext.run(source, context);
   if (source.kind === 'resource-receipts') return resourceReceipts(context);
   if (source.kind === 'sip-source') return sipSource(context);
-  if (source.kind === 'local-wan') {
-    const response = await fetch(source.url, { signal, credentials: 'omit', cache: 'no-store', redirect: 'error', referrerPolicy: 'no-referrer' });
-    const text = await readText(response, 16384);
-    let value = text.trim();
-    if (source.field) {
-      try { value = JSON.parse(text); } catch (_) { throw new Error('本地接口未返回有效 JSON'); }
-      for (const key of source.field.split('.')) {
-        if (!value || typeof value !== 'object' || !Object.prototype.hasOwnProperty.call(value, key)) throw new Error('返回数据没有指定的 JSON 字段');
-        value = value[key];
-      }
-    }
-    const values = Array.isArray(value) ? value : typeof value === 'string' ? value.split(/[\s,]+/) : [];
-    if (!values.length || values.length > 16 || values.some(ip => typeof ip !== 'string')) throw new Error('指定字段没有返回 IP 字符串或地址数组');
-    return { status: 'ok', addresses: values.map(ip => ({ ip, role: 'wan', via: 'user-configured local read-only interface' })),
-      detail: '设备报告的接口地址；可能是公网、运营商共享或私有 WAN 地址' };
-  }
   if (source.kind === 'webtransport-source') {
     if (!window.WebTransport) throw missing('当前浏览器不支持 WebTransport');
     const transport = new WebTransport('https://webt.wtcheck.top:4433/webtransport', { requireUnreliable: true });
@@ -167,12 +151,12 @@ async function execute(source, context) {
     };
     window.addEventListener('message', handler);
     cleanup.push(() => { window.removeEventListener('message', handler); frame.remove(); });
-    frame.src = `./resource-probe.html?v=${version}&target=${source.target}&nonce=${nonce}`;
+    frame.src = `./resource-probe.html?target=${source.target}&nonce=${nonce}`;
     document.body.append(frame);
   });
   if (source.kind === 'worker') return new Promise((resolve, reject) => {
     if (!window.Worker) { reject(missing('浏览器不支持 Worker')); return; }
-    const worker = new Worker(`./workers/network.js?v=${version}`);
+    const worker = new Worker('./workers/network.js');
     cleanup.push(() => worker.terminate());
     worker.onerror = () => reject(new Error('Worker 被浏览器阻止或执行失败'));
     worker.onmessage = event => {
@@ -337,7 +321,7 @@ async function serviceWorkerProbe(context) {
   const previous = await navigator.serviceWorker.getRegistration(scope);
   if (previous && previous.scope === scope && [previous.installing, previous.waiting, previous.active].some(worker => worker && new URL(worker.scriptURL).pathname !== scriptPath)) throw new Error('该作用域已有其他 Service Worker，已跳过');
   if (!active()) throw new Error('Service Worker 已中止');
-  const registration = await navigator.serviceWorker.register(`./workers/network.js?v=${version}`, { scope: './workers/', updateViaCache: 'none' });
+  const registration = await navigator.serviceWorker.register('./workers/network.js', { scope: './workers/', updateViaCache: 'none' });
   // A registration may resolve after the overall deadline; remove it in either case.
   const unregister = () => registration.unregister().catch(() => {});
   if (!active()) { await unregister(); throw new Error('Service Worker 已中止'); }
@@ -369,5 +353,5 @@ async function serviceWorkerProbe(context) {
   });
 }
 
-window.IPObservatoryProbes = Object.freeze({ version, sources, run, readText, makeSIPRequest, readSIPResponse });
+window.IPObservatoryProbes = Object.freeze({ version, sources, run, readText });
 })();

@@ -1,7 +1,7 @@
 /* A bounded, data-only connection to the public Janus EchoTest demo. */
 (() => {
 'use strict';
-const version = '20261010-8';
+const version = '20261010-9';
 const endpoint = 'https://janus.conf.meetecho.com/janus';
 
 async function run(context) {

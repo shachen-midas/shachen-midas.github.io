@@ -1,7 +1,7 @@
 /* Bounded foreground resampling; no persistent storage or background worker. */
 (() => {
 'use strict';
-const version = '20261010-8';
+const version = '20261010-9';
 function create({ available, collect, changed }) {
   let enabled = false; let timer = null; let until = 0; let lastRun = 0;
   let scheduled = []; let pending = ''; let periodic = 0; let events = 0;
