@@ -9,7 +9,7 @@ let done = false;
 const report = data => {
   if (done) return; done = true;
   // No incoming messages or access to the parent's other observations.
-  parent.postMessage({ type: 'ip-observatory-resource', version: '20261010-7', nonce, ...data }, '*');
+  parent.postMessage({ type: 'ip-observatory-resource', version: '20261010-8', nonce, ...data }, '*');
 };
 window.ipObservatoryResponse = data => report({ ip: data && data.ip });
 const script = document.createElement('script');

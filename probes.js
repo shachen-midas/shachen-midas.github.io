@@ -1,7 +1,7 @@
 /* Fixed public diagnostic endpoints. No account keys or visitor persistence. */
 (() => {
 'use strict';
-const version = '20261010-7';
+const version = '20261010-8';
 const sources = [
   { id: 'ws-source', name: 'OnSIP · WSS 来源地址', channel: 'WSS / SIP RECEIVED', kind: 'sip-source' },
   { id: 'wt-source', name: 'WTCheck · QUIC 来源地址', channel: 'WEBTRANSPORT / SOURCE IP', kind: 'webtransport-source' },
@@ -87,6 +87,22 @@ async function execute(source, context) {
   if (source.kind === 'context') return window.IPObservatoryContext.run(source, context);
   if (source.kind === 'resource-receipts') return resourceReceipts(context);
   if (source.kind === 'sip-source') return sipSource(context);
+  if (source.kind === 'local-wan') {
+    const response = await fetch(source.url, { signal, credentials: 'omit', cache: 'no-store', redirect: 'error', referrerPolicy: 'no-referrer' });
+    const text = await readText(response, 16384);
+    let value = text.trim();
+    if (source.field) {
+      try { value = JSON.parse(text); } catch (_) { throw new Error('本地接口未返回有效 JSON'); }
+      for (const key of source.field.split('.')) {
+        if (!value || typeof value !== 'object' || !Object.prototype.hasOwnProperty.call(value, key)) throw new Error('返回数据没有指定的 JSON 字段');
+        value = value[key];
+      }
+    }
+    const values = Array.isArray(value) ? value : typeof value === 'string' ? value.split(/[\s,]+/) : [];
+    if (!values.length || values.length > 16 || values.some(ip => typeof ip !== 'string')) throw new Error('指定字段没有返回 IP 字符串或地址数组');
+    return { status: 'ok', addresses: values.map(ip => ({ ip, role: 'wan', via: 'user-configured local read-only interface' })),
+      detail: '设备报告的接口地址；可能是公网、运营商共享或私有 WAN 地址' };
+  }
   if (source.kind === 'webtransport-source') {
     if (!window.WebTransport) throw missing('当前浏览器不支持 WebTransport');
     const transport = new WebTransport('https://webt.wtcheck.top:4433/webtransport', { requireUnreliable: true });
@@ -204,12 +220,29 @@ async function execute(source, context) {
   throw new Error('未知检测通道');
 }
 
+function makeSIPRequest(nonce, protocol) {
+  return ['OPTIONS sip:edge.sip.onsip.com SIP/2.0', `Via: SIP/2.0/${protocol} ip-observatory.invalid;branch=z9hG4bK${nonce};rport`,
+    'Max-Forwards: 0', 'To: <sip:edge.sip.onsip.com>', `From: <sip:probe@ip-observatory.invalid>;tag=${nonce}`,
+    `Call-ID: ${nonce}@ip-observatory.invalid`, 'CSeq: 1 OPTIONS', 'Content-Length: 0', '', ''].join('\r\n');
+}
+
+function readSIPResponse(text, nonce) {
+  if (typeof text !== 'string') return null;
+  if (text.length > 8192) throw new Error('来源响应过大');
+  const status = /^SIP\/2\.0 (\d{3})\b/.exec(text);
+  const call = (/^(?:Call-ID|i):\s*([^\r\n]+)$/im.exec(text) || [])[1];
+  if (!status || Number(status[1]) < 200 || call !== `${nonce}@ip-observatory.invalid` || !/^CSeq:\s*1\s+OPTIONS\s*$/im.test(text)) return null;
+  const via = (/^(?:Via|v):\s*([^\r\n]+)$/im.exec(text) || [])[1] || '';
+  if (!via.split(';').some(part => part.trim() === `branch=z9hG4bK${nonce}`)) return null;
+  const received = (/(?:^|;)\s*received=([^;,\s]+)/i.exec(via) || [])[1];
+  return { status: status[1], ip: received ? received.replace(/^\[|\]$/g, '') : null };
+}
+
 function sipSource(context) {
   const { cleanup, active } = context;
   if (!window.WebSocket) throw missing('浏览器不支持 WebSocket');
   return new Promise((resolve, reject) => {
     const host = 'edge.sip.onsip.com'; const nonce = randomID();
-    const call = `${nonce}@ip-observatory.invalid`; const branch = `z9hG4bK${nonce}`;
     const socket = new WebSocket(`wss://${host}`, 'sip');
     cleanup.push(() => {
       socket.onopen = socket.onmessage = socket.onerror = socket.onclose = null;
@@ -218,26 +251,16 @@ function sipSource(context) {
     socket.onopen = () => {
       if (!active()) return;
       // OPTIONS with zero forwarding hops queries this public demo endpoint only.
-      const request = [`OPTIONS sip:${host} SIP/2.0`, `Via: SIP/2.0/WSS ip-observatory.invalid;branch=${branch};rport`,
-        'Max-Forwards: 0', `To: <sip:${host}>`, `From: <sip:probe@ip-observatory.invalid>;tag=${nonce}`,
-        `Call-ID: ${call}`, 'CSeq: 1 OPTIONS', 'Content-Length: 0', '', ''].join('\r\n');
-      try { socket.send(request); } catch (_) { reject(new Error('WSS 请求未能发送')); }
+      try { socket.send(makeSIPRequest(nonce, 'WSS')); } catch (_) { reject(new Error('WSS 请求未能发送')); }
     };
     socket.onmessage = event => {
       if (!active() || typeof event.data !== 'string') return;
-      const text = event.data;
-      if (text.length > 8192) { reject(new Error('WSS 来源响应过大')); return; }
-      const status = /^SIP\/2\.0 (\d{3})\b/.exec(text);
-      const responseCall = (/^(?:Call-ID|i):\s*([^\r\n]+)$/im.exec(text) || [])[1];
-      const sequence = /^CSeq:\s*1\s+OPTIONS\s*$/im.test(text);
-      if (!status || Number(status[1]) < 200 || responseCall !== call || !sequence) return;
-      const via = (/^(?:Via|v):\s*([^\r\n]+)$/im.exec(text) || [])[1] || '';
-      if (!via.split(';').some(part => part.trim() === `branch=${branch}`)) return;
-      const received = (/(?:^|;)\s*received=([^;,\s]+)/i.exec(via) || [])[1];
-      if (!received) { resolve({ status: 'reachable', addresses: [], protocol: 'wss', detail: 'WSS 服务已响应，但未回报 Via.received 来源地址' }); return; }
-      const ip = received.replace(/^\[|\]$/g, '');
-      resolve({ status: 'ok', protocol: 'wss', addresses: [{ ip, role: 'connection', via: 'SIP Via.received / WSS' }],
-        detail: `WSS 来源来自匹配本轮请求的 Via.received；SIP 响应 ${status[1]}` });
+      let response;
+      try { response = readSIPResponse(event.data, nonce); } catch (error) { reject(error); return; }
+      if (!response) return;
+      if (!response.ip) { resolve({ status: 'reachable', addresses: [], protocol: 'wss', detail: 'WSS 服务已响应，但未回报 Via.received 来源地址' }); return; }
+      resolve({ status: 'ok', protocol: 'wss', addresses: [{ ip: response.ip, role: 'connection', via: 'SIP Via.received / WSS' }],
+        detail: `WSS 来源来自匹配本轮请求的 Via.received；SIP 响应 ${response.status}` });
     };
     socket.onerror = () => reject(new Error('WSS 来源服务不可用'));
     socket.onclose = () => reject(new Error('WSS 在来源回报前关闭'));
@@ -346,5 +369,5 @@ async function serviceWorkerProbe(context) {
   });
 }
 
-window.IPObservatoryProbes = Object.freeze({ version, sources, run, readText });
+window.IPObservatoryProbes = Object.freeze({ version, sources, run, readText, makeSIPRequest, readSIPResponse });
 })();

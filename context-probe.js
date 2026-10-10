@@ -1,8 +1,8 @@
 /* First-party and embedded contexts via HTTPBin's documented HTML response API. */
 (() => {
 'use strict';
-const version = '20261010-7';
-const kinds = ['embedded', 'https', 'http'];
+const version = '20261010-8';
+const kinds = ['embedded', 'https', 'http', 'ws'];
 
 // This landing page returns results through a same-origin, ephemeral channel.
 // Popup windows never receive an opener reference; nothing is put in storage.
@@ -27,10 +27,12 @@ if (location.pathname.endsWith('/context-probe.html')) {
 
 function remoteDiagnostic(config) {
   // This function is serialized into an intentionally generated diagnostic HTML response.
-  const controller = new AbortController(); const timer = setTimeout(function () { controller.abort(); }, 8000);
+  const controller = new AbortController(); let ended = false;
+  const timer = setTimeout(function () { controller.abort(); output.error = true; finish(); }, 8000);
   const output = { version: config.version, nonce: config.nonce, kind: config.kind,
     documentScheme: location.protocol, requestScheme: null, addresses: [] };
   function finish() {
+    if (ended) return; ended = true;
     clearTimeout(timer);
     location.replace(config.returnURL + '#' + btoa(JSON.stringify(output)));
   }
@@ -52,6 +54,31 @@ function remoteDiagnostic(config) {
     }).catch(function () { output.addresses = []; output.error = true; finish(); });
 }
 
+function remoteSocketDiagnostic(config, makeSIPRequest, readSIPResponse) {
+  const output = { version: config.version, nonce: config.nonce, kind: config.kind,
+    documentScheme: location.protocol, requestScheme: 'ws:', addresses: [] };
+  let socket = null; let ended = false;
+  const timer = setTimeout(function () { output.error = true; finish(); }, 8000);
+  function finish() {
+    if (ended) return; ended = true; clearTimeout(timer);
+    if (socket) { socket.onopen = socket.onmessage = socket.onerror = socket.onclose = null; try { socket.close(); } catch (_) {} }
+    location.replace(config.returnURL + '#' + btoa(JSON.stringify(output)));
+  }
+  if (location.protocol !== 'http:') { output.error = true; output.reason = 'http-upgraded'; finish(); return; }
+  try {
+    socket = new WebSocket('ws://edge.sip.onsip.com', 'sip');
+    socket.onopen = function () { try { socket.send(makeSIPRequest(config.nonce, 'WS')); } catch (_) { output.error = true; finish(); } };
+    socket.onmessage = function (event) {
+      try {
+        const response = readSIPResponse(event.data, config.nonce); if (!response) return;
+        if (response.ip) output.addresses = [response.ip]; else output.error = true;
+        finish();
+      } catch (_) { output.error = true; finish(); }
+    };
+    socket.onerror = socket.onclose = function () { output.error = true; finish(); };
+  } catch (_) { output.error = true; finish(); }
+}
+
 function run(source, context) {
   const { cleanup, active, randomID } = context;
   const kind = source.contextKind || 'embedded';
@@ -60,21 +87,29 @@ function run(source, context) {
   const nonce = randomID();
   const returnURL = new URL(`./context-probe.html?v=${version}`, location.href).href;
   const config = { nonce, version, kind, returnURL };
-  const code = `(${remoteDiagnostic.toString()})(${JSON.stringify(config).replace(/</g, '\\u003c')});`;
+  const protocol = window.IPObservatoryProbes;
+  const diagnostic = kind === 'ws' ? remoteSocketDiagnostic : remoteDiagnostic;
+  const code = `(${diagnostic.toString()})(${JSON.stringify(config).replace(/</g, '\\u003c')},${kind === 'ws' ? protocol.makeSIPRequest.toString() : 'null'},${kind === 'ws' ? protocol.readSIPResponse.toString() : 'null'});`;
   // HTTPBin supports a text/html body at /base64/. No other site's script is copied or injected.
   const html = '<!doctype html><meta charset="utf-8"><meta name="referrer" content="no-referrer">' +
-    '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; script-src \'unsafe-inline\'; connect-src \'self\' https://httpbin.org; base-uri \'none\'; form-action \'none\'">' +
+    '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; script-src \'unsafe-inline\'; connect-src \'self\' https://httpbin.org ws://edge.sip.onsip.com; base-uri \'none\'; form-action \'none\'">' +
     '<title>IP Observatory context comparison</title><p>Measuring this page context and returning the result...</p><script>' + code + '</script>';
   // The route accepts base64url; an encoded slash in ordinary Base64 produces a 404.
   const encoded = btoa(unescape(encodeURIComponent(html))).replace(/\+/g, '-').replace(/\//g, '_');
-  const url = `${kind === 'http' ? 'http' : 'https'}://httpbin.org/base64/${encoded}`;
+  const url = `${['http', 'ws'].includes(kind) ? 'http' : 'https'}://httpbin.org/base64/${encoded}`;
   return new Promise((resolve, reject) => {
     let frame = null;
     const accept = data => {
       if (!active()) return;
       if (!data || data.nonce !== nonce || data.version !== version || data.kind !== kind) return;
-      if (data.error || !Array.isArray(data.addresses) || data.addresses.length > 16) { reject(new Error('对照页面未返回地址')); return; }
-      if (!['http:', 'https:'].includes(data.documentScheme) || !['http:', 'https:'].includes(data.requestScheme)) { reject(new Error('对照页面未返回有效协议')); return; }
+      if (data.error || !Array.isArray(data.addresses) || data.addresses.length > 16) { reject(new Error(data.reason === 'http-upgraded' ? 'HTTP 页面已升级为 HTTPS，未发起明文 WS 对照' : '对照页面未返回地址')); return; }
+      if (!['http:', 'https:'].includes(data.documentScheme) || !(kind === 'ws' ? data.requestScheme === 'ws:' && data.documentScheme === 'http:' : ['http:', 'https:'].includes(data.requestScheme))) { reject(new Error('对照页面未返回有效协议')); return; }
+      if (kind === 'ws') {
+        resolve({ status: 'ok', addresses: data.addresses.map(ip => ({ ip, role: 'connection', via: 'SIP Via.received / WS entry' })),
+          protocol: 'websocket', context: { kind, requestedScheme: 'ws:', documentScheme: data.documentScheme },
+          detail: '从 HTTP 第一方页面以 ws:// 发起；来源字段匹配本轮请求。浏览器未提供底层传输协议证明' });
+        return;
+      }
       const contextName = kind === 'embedded' ? '第三方 iframe 内同源请求' : '第一方页面内同源请求';
       const upgraded = kind === 'http' && (data.documentScheme !== 'http:' || data.requestScheme !== 'http:');
       resolve({ status: 'ok', addresses: data.addresses.map(ip => ({ ip, role: 'reported', header: 'origin', via: contextName })),
