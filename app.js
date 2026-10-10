@@ -2,7 +2,7 @@
 (() => {
 'use strict';
 
-const ASSET_VERSION = '20261010-4';
+const ASSET_VERSION = '20261010-5';
 
 function showStartupFailure() {
   const setIfPresent = (id, text) => { const node = document.getElementById(id); if (node) node.textContent = text; };
@@ -48,6 +48,16 @@ const sources = [
   { id: 'bin', name: 'HTTPBin · 来源链', channel: 'HTTPS / ECHO', url: 'https://httpbin.org/ip', format: 'echo' },
 ];
 const stunSources = [
+  { id: 'bilibili', name: 'Bilibili · STUN', channel: 'STUN / CN ROUTE', url: 'stun:stun.chat.bilibili.com:3478' },
+  { id: 'hitv', name: '芒果 · STUN', channel: 'STUN / CN ROUTE', url: 'stun:stun.hitv.com:3478' },
+  { id: 'miwifi', name: '小米 · STUN', channel: 'STUN / CN ROUTE', url: 'stun:stun.miwifi.com:3478' },
+  { id: 'reference', name: 'IPPure 配置对照', channel: 'STUN / MIXED ROUTES', timeout: 3000, iceServers: [
+    { urls: 'stun:stun.chat.bilibili.com:3478' },
+    { urls: 'stun:stun.hitv.com:3478' },
+    { urls: 'stun:stun.miwifi.com:3478' },
+    { urls: 'stun:stun.cloudflare.com:3478' },
+    { urls: 'stun:stun.l.google.com:19302' },
+  ] },
   { id: 'host', name: 'WebRTC · 本地接口', channel: 'ICE / HOST ONLY' },
   { id: 'google', name: 'Google · STUN', channel: 'WEBRTC / ICE', url: 'stun:stun.l.google.com:19302' },
   { id: 'cloudflare', name: 'Cloudflare · STUN', channel: 'WEBRTC / ICE', url: 'stun:stun.cloudflare.com:3478' },
@@ -392,9 +402,9 @@ async function probeSTUN(source) {
       result.ms = Math.round(performance.now() - start);
       try { render(); } finally { resolve(); }
     };
-    const timer = setTimeout(() => finish(), 10000);
+    const timer = setTimeout(() => finish(), source.timeout || 10000);
     try {
-      pc = new RTCPeerConnection({ iceServers: urls.length ? [{ urls }] : [], iceCandidatePoolSize: 0, iceTransportPolicy: 'all' });
+      pc = new RTCPeerConnection({ iceServers: source.iceServers || (urls.length ? [{ urls }] : []), iceCandidatePoolSize: 0, iceTransportPolicy: 'all' });
       pc.onicecandidate = event => {
         if (!event.candidate) { finish(); return; }
         if (!done) { hidden = collectCandidate(result, event.candidate) || hidden; render(); }

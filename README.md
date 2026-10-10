@@ -5,7 +5,7 @@ A buildless, browser-only network observation page for **https://shachen-midas.g
 ## Features
 
 - 14 HTTPS channels: ipify and icanhazip address-family endpoints, Cloudflare hostname/literal IPv4/literal IPv6 trace, Amazon CheckIP, and HTTPBingo/HTTPBin origin and forwarded-header observations.
-- 9 automatic WebRTC configurations: host-only, Google and Cloudflare hostname STUN, Cloudflare UDP 53, explicit IPv4/IPv6 targets for both providers, and a receive-only audio/video offer. No camera or microphone permissions or capture.
+- 13 automatic WebRTC configurations: Bilibili, HiTV, MiWiFi, the five-server IPPure comparison configuration, host-only, Google and Cloudflare hostname STUN, Cloudflare UDP 53, explicit IPv4/IPv6 targets for both providers, and a receive-only audio/video offer. No camera or microphone permissions or capture.
 - All observed addresses shown equally at the top, deduplicated with every source preserved. ICE events, relatedAddress/raddr, final local SDP, ICE transport local candidates, and getStats local-candidate records are included. Remote candidates and STUN server DNS answers are never counted as visitor addresses.
 - Per-address country flags via country.is, with explicit unknown and local/shared address labels.
 - Source-level results, elapsed time, independent error states, copy all addresses, and local JSON export including country and provenance.
@@ -50,9 +50,9 @@ Target: `shachen-midas/shachen-midas.github.io`, user site `https://shachen-mida
 | HTTPS hostnames, IPv4, IPv6 | 8 normal/family-specific channels | The service observes the connection reaching it. |
 | HTTPS literal IPv4/IPv6 | 4 Cloudflare trace destinations | May follow different PAC or split-routing rules; labeled IP-direct, not asserted to bypass a proxy. |
 | Origin and forwarding chains | 2 public echo services | Header-derived addresses remain explicitly unverified; proxies and upstream services can add them. |
-| WebRTC UDP | Google 19302; Cloudflare 3478 and 53 | Separately captures host, server-reflexive and related addresses. |
+| WebRTC UDP | Bilibili / HiTV / MiWiFi 3478; Google 19302; Cloudflare 3478 and 53 | Separately captures host, server-reflexive and related addresses. |
 | Explicit STUN address families | Live A/AAAA lookups for Google and Cloudflare through Google DNS | DNS answers configure only the service destination, not visitor results. |
-| Browser address surfaces | ICE events, SDP, ICE transports, getStats, receive-only offer | Only local-candidate stats are collected. One-second stats deadline and ten-second gathering deadline. |
+| Browser address surfaces | ICE events, SDP, ICE transports, getStats, receive-only offer | Only local-candidate stats are collected. One-second stats deadline; gathering timers are ten seconds, or three seconds for the reference configuration. |
 | DNS resolver / ECS observation | Requires an authoritative DNS collector and correlation endpoint | Resolver IPs and ECS prefixes are different evidence from the client's exact IP. Not supplied by ordinary DoH queries. |
 | TURN TCP/TLS | Requires an authenticated TURN endpoint and short-lived credentials | Relay addresses identify the relay; related or server-observed client addresses must be classified separately. |
 | HTTP/WebSocket/WebTransport collector | Requires a public backend | Observes the transport peer and any forwarded headers; headers need a defined trust boundary. |
@@ -67,3 +67,13 @@ Public service availability varies. UDP 53 binding support was checked during im
 - [WebRTC IP handling modes](https://www.rfc-editor.org/rfc/rfc8828.html)
 - [WebRTC local-candidate stats](https://developer.mozilla.org/en-US/docs/Web/API/RTCIceCandidateStats)
 - [Cloudflare service ports](https://developers.cloudflare.com/realtime/turn/)
+
+## Domestic STUN comparison
+
+The public IPPure Claude page uses Bilibili, HiTV, MiWiFi, Cloudflare, and Google STUN in a single peer connection, in that order, with a three-second collection timeout. The earlier version of this site omitted those first three destinations. Destination-based proxy rules can send these STUN paths through different exits.
+
+This site now probes those three destinations individually and also runs the same five-server ordering in a comparison peer connection. Its three-second gathering timer starts final candidate/statistics readout, which can take up to one additional second and still include arriving candidates. All four probes start first in the automatic WebRTC queue. The other configurations retain their ten-second gathering timer. Server names describe the destination; an observed IP's country still comes from geolocation, never from the server name. `CN ROUTE` is a destination category, not a claim that the response IP is in China.
+
+The reference page uses MaxMind / DB-IP / IP2Location through its own API for location labels, while this site uses country.is. Different country labels alone must not be treated as proof that the numeric IP was not collected.
+
+Reference inspected: [IPPure WebRTC module](https://ippure.com/assets/chunks/webrtc.B2iVidua.js), [IPPure Claude page](https://ippure.com/claude), and [IPPure geolocation module](https://ippure.com/assets/chunks/useFastIPInfo.BWfKblf_.js). Only public server configuration facts were used; no third-party application code was copied.
