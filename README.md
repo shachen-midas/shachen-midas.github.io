@@ -23,6 +23,8 @@ The application has no backend, analytics, cookies, or persistent visitor storag
 
 Edit `index.html`, `style.css`, or `app.js`, then push to `master`. GitHub Pages publishes from `master` at `/`; `.nojekyll` disables Jekyll processing. No build, package installation, API key, or paid external service is required by this application. Private repository Pages availability depends on the GitHub account plan.
 
+For each deployment that changes JavaScript, CSS, or their HTML contract, update `ASSET_VERSION` in `app.js` and the matching `data-asset-version`, script query, and stylesheet query in `index.html` together. Pages caches assets for up to ten minutes; versioned resource URLs prevent a fresh page from reusing an older script. A mismatched HTML/script version stops with a reload action instead of leaving an endless loading state. The reload action bypasses the cached HTML URL as well.
+
 Check JavaScript syntax with `node --check app.js`. Preview using `python3 -m http.server 8000` from this directory. Open `http://localhost:8000` in a modern browser. Verify ordinary success, source failure, unavailable IPv6, repeated detection, automatic WebRTC, related addresses, country success/failure, copy all, export, and a narrow viewport. HTTP timeouts are 9 seconds; ICE gathering is limited to 10 seconds. External services may be blocked or unavailable and are not guaranteed.
 
 Only website source and this documentation belong in the repository. Do not commit credentials, machine configuration, visitor reports, real diagnostic captures, or deployment account secrets.

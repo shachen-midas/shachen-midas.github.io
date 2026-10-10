@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-asset-version="20261010-3">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -9,8 +9,8 @@
   <meta name="theme-color" content="#101411">
   <title>IP Observatory · 看见你的网络出口</title>
   <link rel="icon" href="./favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="./style.css">
-  <script src="./app.js" defer></script>
+  <link rel="stylesheet" href="./style.css?v=20261010-3">
+  <script src="./app.js?v=20261010-3" defer></script>
 </head>
 <body>
   <div class="shell">
@@ -19,16 +19,16 @@
       <section class="intro"><div><p class="eyebrow"><span class="dot"></span> YOUR CONNECTION, IN FOCUS</p><h1>看见你的<br>网络<span class="accent">出口。</span></h1><p class="lede">一条连接，不一定只有一个地址。<br>从 HTTPS 到 WebRTC，交叉观察互联网眼中的你。</p></div><div class="radar" aria-hidden="true"><div class="ring r1"></div><div class="ring r2"></div><div class="ring r3"></div><div class="cross horizontal"></div><div class="cross vertical"></div><span class="radar-center">YOU</span><span class="radar-point p1"></span><span class="radar-point p2"></span><span class="radar-label">PUBLIC NETWORK</span><span class="radar-number">IPv4 / IPv6 / ICE</span></div></section>
       <section class="reading" aria-labelledby="reading-title">
         <div class="section-top"><h2 id="reading-title">全部观测地址 <span>ALL OBSERVED ADDRESSES</span></h2><span id="run-status" role="status">准备检测</span></div>
-        <p id="address-count" class="address-count" role="status">正在收集地址…</p><div id="all-addresses" class="address-grid"></div>
+        <p id="address-count" class="address-count" role="status">等待检测程序启动…</p><div id="all-addresses" class="address-grid"></div>
         <p id="observation-note" class="muted">等待查询源响应。所有结果均来自本次连接。</p>
-        <div class="metrics"><div><span>HTTPS / IPv4</span><strong id="ipv4">检测中…</strong></div><div><span>HTTPS / IPv6</span><strong id="ipv6">检测中…</strong></div><div><span>WebRTC / STUN</span><strong id="rtc-summary">检测中…</strong></div></div>
+        <div class="metrics"><div><span>HTTPS / IPv4</span><strong id="ipv4">等待启动</strong></div><div><span>HTTPS / IPv6</span><strong id="ipv6">等待启动</strong></div><div><span>WebRTC / STUN</span><strong id="rtc-summary">等待启动</strong></div></div>
         <div class="action-row"><button id="refresh" class="button primary">重新全面检测 <span>↻</span></button><button id="copy" class="button secondary" disabled>复制全部 IP <span>↗</span></button><button id="export" class="text-button" disabled>导出报告 ↓</button></div>
         <p class="disclosure">每次打开页面或重新检测，自动并行查询全部 HTTPS 来源与 Google / Cloudflare STUN；无需摄像头或麦克风。公网地址会发送给 country.is 查询国家；本地 / 共享地址不做国别查询。国旗表示 IP 数据库中的国家或地区，不代表访客实际所在地。</p>
       </section>
       <section class="sources" aria-labelledby="sources-title"><div class="section-heading"><h2 id="sources-title"><span class="index">01 /</span> 每条路径，都有依据</h2><span class="mono">LIVE SOURCES</span></div><div class="table-wrap"><table><thead><tr><th>检测来源 / 通道</th><th>观察到的地址</th><th>状态</th><th>耗时</th></tr></thead><tbody id="source-rows"></tbody></table></div><p id="comparison" class="observation" role="status">正在对照各来源的观测结果…</p></section>
       <section class="explain"><div><span class="index">02 / READING THE SIGNAL</span><h2>这是“真实 IP”吗？</h2><p>这是各条网络路径实际观察到的地址。VPN、代理、NAT 和运营商网络都可能改变出口；网页无法保证取得代理背后的原始 IP。</p></div><div class="notes"><article><span>↗</span><div><h3>多个地址，可能都是真的</h3><p>IPv4 与 IPv6、分流代理、不同网络接口可能使用不同出口。结果不一致不能单独证明 VPN 泄漏。</p></div></article><article><span>◎</span><div><h3>WebRTC 提供另一条观察路径</h3><p>STUN 尝试获取浏览器允许暴露的连接候选地址及 relatedAddress 关联地址。mDNS、浏览器隐私设置或 UDP 限制可能隐藏地址或让检测失败。</p></div></article><article><span>⌁</span><div><h3>结果留在当前页面</h3><p>本应用不保存检测历史，也不将结果上传到站长的数据库。IP 与 STUN 服务会看到请求来源，country.is 会收到待查公网 IP；GitHub 和第三方服务可能记录访问日志。</p></div></article></div></section>
       <noscript><p class="observation">此检测需要 JavaScript。请启用后重新加载页面。</p></noscript>
-      <p id="notice" class="notice" role="status"></p>
+      <p id="notice" class="notice" role="status">若检测长时间未启动，请重新加载页面，并确认浏览器允许 JavaScript。</p>
     </main>
     <footer><span>◎ IP OBSERVATORY</span><span>BUILT FOR CURIOSITY · BY SHACHEN-MIDAS</span><span>HTTPS + STUN</span></footer>
   </div>

@@ -1,5 +1,35 @@
 /* IP Observatory: browser-only observations, no application telemetry or storage. */
+(() => {
 'use strict';
+
+const ASSET_VERSION = '20261010-3';
+
+function showStartupFailure() {
+  const setIfPresent = (id, text) => { const node = document.getElementById(id); if (node) node.textContent = text; };
+  setIfPresent('run-status', '页面需要重新加载');
+  setIfPresent('notice', '页面资源版本不一致或检测程序运行失败。请点击「重新加载页面」获取最新版本。');
+  ['ipv4', 'ipv6', 'rtc-summary'].forEach(id => setIfPresent(id, '检测未完成'));
+  const refreshButton = document.getElementById('refresh');
+  if (refreshButton) {
+    refreshButton.disabled = false;
+    refreshButton.textContent = '重新加载页面 ↻';
+    // Replace listeners from any partially completed initialization.
+    const reloadButton = refreshButton.cloneNode(true);
+    refreshButton.replaceWith(reloadButton);
+    reloadButton.addEventListener('click', () => {
+      const url = new URL(window.location.href);
+      url.searchParams.set('v', ASSET_VERSION);
+      url.searchParams.set('reload', String(Date.now()));
+      window.location.replace(url.href);
+    });
+  }
+}
+
+// A cached HTML document must never initialize an incompatible application.
+if (document.documentElement.dataset.assetVersion !== ASSET_VERSION) {
+  showStartupFailure();
+  return;
+}
 
 const sources = [
   { id: 'v4', name: 'ipify · IPv4', channel: 'HTTPS / IPv4', url: 'https://api.ipify.org?format=json', format: 'json' },
@@ -255,7 +285,8 @@ function probeSTUN(source) {
   });
 }
 
-byId('refresh').addEventListener('click', refresh);
+try {
+byId('refresh').addEventListener('click', () => refresh().catch(showStartupFailure));
 byId('copy').addEventListener('click', async () => {
   try { await navigator.clipboard.writeText(byId('copy').dataset.ips); setText('notice', '全部已观测地址已复制，每行一个 IP。'); }
   catch (_) { setText('notice', '浏览器未允许复制，请选中地址手动复制。'); }
@@ -267,4 +298,6 @@ byId('export').addEventListener('click', () => {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
   setText('notice', '报告已导出到你的设备，包含本次观察到的 IP 地址。');
 });
-refresh();
+refresh().catch(showStartupFailure);
+} catch (_) { showStartupFailure(); }
+})();
