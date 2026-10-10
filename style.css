@@ -9,3 +9,10 @@
 .source-address+.source-address{margin-top:14px}
 
 .evidence-tag{display:block;margin-top:8px;color:#b4cb99;font-size:10px;line-height:1.8}
+.clue-section{margin-top:25px;padding-top:20px;border-top:1px solid var(--line)}
+.clue-section h3{font-size:12px;font-weight:500;margin:0}
+.clue-section .address-count{margin-top:12px}
+.clue-section .address-card{border-color:#3b464b;background:#121a1a70}
+.clue-section .address-card strong{color:#b8dae1}
+.status.reachable{color:#9bcad5}.status.partial{color:#dfc391}
+.action-row{flex-wrap:wrap}.sources>.observation{margin-bottom:18px}

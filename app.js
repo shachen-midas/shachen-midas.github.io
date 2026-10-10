@@ -2,7 +2,7 @@
 (() => {
 'use strict';
 
-const ASSET_VERSION = '20261010-5';
+const ASSET_VERSION = '20261010-6';
 
 function showStartupFailure() {
   const setIfPresent = (id, text) => { const node = document.getElementById(id); if (node) node.textContent = text; };
@@ -26,7 +26,7 @@ function showStartupFailure() {
 }
 
 // A cached HTML document must never initialize an incompatible application.
-if (document.documentElement.dataset.assetVersion !== ASSET_VERSION) {
+if (document.documentElement.dataset.assetVersion !== ASSET_VERSION || !window.IPObservatoryProbes || window.IPObservatoryProbes.version !== ASSET_VERSION) {
   showStartupFailure();
   return;
 }
@@ -46,6 +46,11 @@ const sources = [
   { id: 'literal6b', name: 'Cloudflare · IPv6 直访 B', channel: 'HTTPS / LITERAL IPv6', url: 'https://[2606:4700:4700::1001]/cdn-cgi/trace', format: 'trace', family: 6, direct: true },
   { id: 'bingo', name: 'HTTPBingo · 来源 / 转发头', channel: 'HTTPS / ECHO', url: 'https://httpbingo.org/get', format: 'echo' },
   { id: 'bin', name: 'HTTPBin · 来源链', channel: 'HTTPS / ECHO', url: 'https://httpbin.org/ip', format: 'echo' },
+  { id: 'zxinc', name: '纯真 · HTTPS', channel: 'HTTPS / ZXINC', url: 'https://ip.zxinc.org/api.php?type=json', format: 'zxinc' },
+  { id: 'ipsb', name: 'IP.SB · HTTPS', channel: 'HTTPS / TEXT', url: 'https://api.ip.sb/ip', format: 'text' },
+  { id: 'netokay', name: 'NetOkay · 协议 / 出口', channel: 'HTTPS / PROTOCOL', url: 'https://netokay.net/v1/control/self', format: 'netokay' },
+  { id: 'cf8443', name: 'Cloudflare · HTTPS 8443', channel: 'HTTPS / PORT 8443', url: 'https://www.cloudflare.com:8443/cdn-cgi/trace', format: 'trace' },
+  { id: 'cf2087', name: 'Cloudflare · HTTPS 2087', channel: 'HTTPS / PORT 2087', url: 'https://www.cloudflare.com:2087/cdn-cgi/trace', format: 'trace' },
 ];
 const stunSources = [
   { id: 'bilibili', name: 'Bilibili · STUN', channel: 'STUN / CN ROUTE', url: 'stun:stun.chat.bilibili.com:3478' },
@@ -67,15 +72,27 @@ const stunSources = [
   { id: 'cf4', name: 'Cloudflare · STUN IPv4', channel: 'STUN / EXPLICIT IPv4', host: 'stun.cloudflare.com', port: 3478, family: 4 },
   { id: 'cf6', name: 'Cloudflare · STUN IPv6', channel: 'STUN / EXPLICIT IPv6', host: 'stun.cloudflare.com', port: 3478, family: 6 },
   { id: 'media', name: 'WebRTC · 接收通道', channel: 'ICE / RECVONLY', url: 'stun:stun.l.google.com:19302', media: true },
+  { id: 'bilibili4', name: 'Bilibili · STUN IPv4', channel: 'STUN / EXPLICIT IPv4', host: 'stun.chat.bilibili.com', port: 3478, family: 4 },
+  { id: 'hitv4', name: '芒果 · STUN IPv4', channel: 'STUN / EXPLICIT IPv4', host: 'stun.hitv.com', port: 3478, family: 4 },
+  { id: 'hitv6', name: '芒果 · STUN IPv6', channel: 'STUN / EXPLICIT IPv6', host: 'stun.hitv.com', port: 3478, family: 6 },
+  { id: 'miwifi4', name: '小米 · STUN IPv4', channel: 'STUN / EXPLICIT IPv4', host: 'stun.miwifi.com', port: 3478, family: 4 },
+  { id: 'turn-udp', name: 'Open Relay · TURN UDP', channel: 'TURN / UDP 80', turn: true, url: 'turn:staticauth.openrelay.metered.ca:80?transport=udp' },
+  { id: 'turn-tcp', name: 'Open Relay · TURN TCP', channel: 'TURN / TCP 80', turn: true, url: 'turn:staticauth.openrelay.metered.ca:80?transport=tcp' },
+  { id: 'turn-tls', name: 'Open Relay · TURN TLS', channel: 'TURN / TLS 443', turn: true, url: 'turns:staticauth.openrelay.metered.ca:443?transport=tcp' },
 ];
+const networkSources = window.IPObservatoryProbes.sources;
 const byId = id => document.getElementById(id);
 let results = [];
 let rtcResults = [];
+let networkResults = [];
 let busy = false;
 let rtcBusy = false;
+let networkBusy = false;
+let runController = null;
 let measuredAt = null;
 const countries = new Map();
 const countryQueue = [];
+const countryControllers = new Set();
 let countryWorkers = 0;
 
 function countryFlag(code) {
@@ -96,23 +113,54 @@ function countryInfo(ip) {
 function displayIP(ip) { const country = countryInfo(ip); return `${country.flag} ${ip}（${country.label}）`; }
 
 function addressLabel(address) {
+  if (address.role === 'dns') return 'DNS 解析器（非访客地址）';
+  if (address.role === 'ecs') return 'ECS 网段线索（前缀长度未提供）';
+  if (address.role === 'embedded') return `${address.encoding} 编码中的 IPv4（推导线索）`;
+  if (address.role === 'connection') return '该连接观察到的出口';
   if (address.role === 'forwarded') return `${address.header} 转发头线索（未验证）`;
   if (address.role === 'reported') return '服务报告的来源链（未验证）';
   if (address.role === 'related') return `${address.type} 关联地址`;
-  if (address.type === 'relay') return 'TURN 中继地址';
+  if (address.type === 'relay') return 'TURN 中继服务器（非访客地址）';
   if (address.type === 'srflx') return 'STUN 映射地址';
   if (address.type === 'host') return '浏览器接口地址';
   return address.type || 'HTTPS 出口';
 }
 
+function allResults() { return [...results, ...rtcResults, ...networkResults]; }
+function isClue(address) { return ['dns', 'ecs', 'embedded'].includes(address.role) || address.type === 'relay' && address.role !== 'related'; }
+function running() { return busy || rtcBusy || networkBusy; }
+
+function embeddedIPv4(ip) {
+  if (!ip.includes(':')) return null;
+  const halves = ip.split('::'); const left = halves[0] ? halves[0].split(':') : [];
+  const right = halves.length === 2 && halves[1] ? halves[1].split(':') : [];
+  const parts = (halves.length === 2 ? [...left, ...Array(8 - left.length - right.length).fill('0'), ...right] : left).map(x => parseInt(x, 16));
+  if (parts.length !== 8) return null;
+  let a; let b; let encoding;
+  if (parts[0] === 0x2002) { a = parts[1]; b = parts[2]; encoding = '6to4 网关'; }
+  else if (parts[0] === 0x2001 && parts[1] === 0) { a = (~parts[6]) & 0xffff; b = (~parts[7]) & 0xffff; encoding = 'Teredo 客户端映射'; }
+  else if (parts.slice(0, 5).every(x => x === 0) && parts[5] === 0xffff) { a = parts[6]; b = parts[7]; encoding = 'IPv4-mapped IPv6'; }
+  else return null;
+  const value = `${a >> 8}.${a & 255}.${b >> 8}.${b & 255}`;
+  return { ip: value, scope: addressScope(value), role: 'embedded', via: 'IPv6 address encoding', encoding, derivedFrom: ip };
+}
+
 function allAddresses() {
   const unique = new Map();
-  [...results, ...rtcResults].forEach(result => (result.addresses || []).forEach(address => {
-    if (!unique.has(address.ip)) unique.set(address.ip, { ...address, sources: [], evidence: [] });
+  const add = (result, address) => {
+    const group = isClue(address) ? 'clue' : 'connection';
+    const key = `${group}:${address.role === 'ecs' ? 'ecs:' : ''}${address.ip}`;
+    if (!unique.has(key)) unique.set(key, { ...address, group, sources: [], evidence: [] });
     const label = `${result.name} / ${addressLabel(address)}`;
-    const entry = unique.get(address.ip);
+    const entry = unique.get(key);
     if (!entry.sources.includes(label)) entry.sources.push(label);
-    entry.evidence.push({ source: result.id, channel: result.channel, role: address.role || 'https', type: address.type || null, via: address.via || 'response', protocol: address.protocol || null, direct: !!result.direct });
+    entry.evidence.push({ source: result.id, channel: result.channel, role: address.role || 'https', type: address.type || null, via: address.via || 'response', protocol: address.protocol || result.protocol || null, direct: !!result.direct, derivedFrom: address.derivedFrom || null, encoding: address.encoding || null });
+  };
+  allResults().forEach(result => (result.addresses || []).forEach(address => {
+    add(result, address);
+    if (!isClue(address) && !['forwarded', 'reported'].includes(address.role)) {
+      const derived = embeddedIPv4(address.ip); if (derived) add(result, derived);
+    }
   }));
   return [...unique.values()];
 }
@@ -130,6 +178,7 @@ function scheduleCountries() {
 
 async function lookupCountry(ip) {
   const controller = new AbortController();
+  countryControllers.add(controller);
   const timeout = setTimeout(() => controller.abort(), 6000);
   try {
     const response = await fetch(`https://api.country.is/${encodeURIComponent(ip)}`, { signal: controller.signal, credentials: 'omit', referrerPolicy: 'no-referrer' });
@@ -139,7 +188,7 @@ async function lookupCountry(ip) {
     countries.set(ip, { status: 'ok', code: data.country });
   } catch (_) { countries.set(ip, { status: 'error' }); }
   finally {
-    clearTimeout(timeout); countryWorkers--; scheduleCountries(); render();
+    clearTimeout(timeout); countryControllers.delete(controller); countryWorkers--; scheduleCountries(); render();
   }
 }
 
@@ -156,7 +205,7 @@ function normalizeIP(value) {
 
 function addressScope(ip) {
   if (ip.includes(':')) {
-    if (ip === '::' || ip === '::1' || /^(f[cd]|fe[89ab]|ff)/i.test(ip)) return 'local';
+    if (ip === '::' || ip === '::1' || ip.startsWith('2001:db8:') || /^(f[cd]|fe[89ab]|ff)/i.test(ip)) return 'local';
     // IPv4-mapped IPv6 candidates need the embedded address classification.
     if (ip.startsWith('::ffff:')) {
       const tail = ip.slice(7).split(':');
@@ -167,19 +216,46 @@ function addressScope(ip) {
     }
     return 'public';
   }
-  const [a, b] = ip.split('.').map(Number);
+  const [a, b, c] = ip.split('.').map(Number);
   return a === 0 || a === 10 || a === 127 || a >= 224 ||
     (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) ||
-    (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127) ? 'local' : 'public';
+    (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127) ||
+    (a === 192 && b === 0 && c === 2) || (a === 198 && b === 51 && c === 100) ||
+    (a === 203 && b === 0 && c === 113) || (a === 198 && (b === 18 || b === 19)) ? 'local' : 'public';
 }
 
 function setText(id, value) { byId(id).textContent = value; }
 function makeCell(value) { const td = document.createElement('td'); td.textContent = value; return td; }
 
+function renderCards(node, entries, emptyText) {
+  node.replaceChildren();
+  if (!entries.length) { const empty = document.createElement('p'); empty.className = 'muted'; empty.textContent = emptyText; node.append(empty); }
+  entries.forEach(entry => {
+    const card = document.createElement('article'); card.className = 'address-card';
+    const value = document.createElement('strong'); value.textContent = displayIP(entry.ip);
+    const provenance = document.createElement('p'); provenance.textContent = entry.sources.join(' · ');
+    const kinds = document.createElement('span'); kinds.className = 'evidence-tag';
+    const labels = [];
+    if (entry.evidence.some(x => x.direct)) labels.push('IP 直访');
+    if (entry.evidence.some(x => x.type === 'srflx' && x.role !== 'related')) labels.push('STUN 映射');
+    if (entry.evidence.some(x => x.type === 'host' && x.role !== 'related')) labels.push('接口候选');
+    if (entry.evidence.some(x => x.type === 'relay' && x.role !== 'related')) labels.push('TURN 中继服务器');
+    if (entry.evidence.some(x => x.role === 'related')) labels.push('关联地址');
+    if (entry.evidence.some(x => x.role === 'forwarded')) labels.push('转发头线索');
+    if (entry.evidence.some(x => x.role === 'reported')) labels.push('来源链线索');
+    if (entry.evidence.some(x => x.role === 'dns')) labels.push('DNS 解析器 · 非访客地址');
+    if (entry.evidence.some(x => x.role === 'ecs')) labels.push('ECS 网段 · 非完整客户端地址');
+    if (entry.evidence.some(x => x.role === 'embedded')) labels.push('IPv6 编码推导 · 尚未独立观测');
+    if (entry.evidence.some(x => x.role === 'connection')) labels.push('连接出口');
+    kinds.textContent = labels.join(' / ');
+    card.append(value, kinds, provenance); node.append(card);
+  });
+}
+
 function render() {
   const tbody = byId('source-rows');
   tbody.replaceChildren();
-  [...results, ...rtcResults].forEach(result => {
+  allResults().forEach(result => {
     const row = document.createElement('tr');
     const name = makeCell(result.name);
     const channel = document.createElement('small'); channel.textContent = result.channel; name.append(channel);
@@ -192,9 +268,11 @@ function render() {
       const type = document.createElement('small'); type.textContent = `${addressLabel(x)}${x.via ? ` / ${x.via}` : ''}`;
       line.append(type); address.append(line);
     });
+    if (addresses.length && result.detail) { const detail = document.createElement('small'); detail.textContent = result.detail; address.append(detail); }
+    if (result.protocol) { const protocol = document.createElement('small'); protocol.textContent = `实际协议：${result.protocol}`; address.append(protocol); }
     const state = makeCell('');
     const badge = document.createElement('span'); badge.className = `status ${result.status}`;
-    badge.textContent = { queued: '○ 排队中', pending: '◌ 检测中', idle: '○ 未开始', ok: '● 已观测', error: '— 不可用' }[result.status];
+    badge.textContent = { queued: '○ 排队中', pending: '◌ 检测中', idle: '○ 未开始', ok: '● 已观测', partial: '◐ 部分结果', reachable: '◇ 可达 / 无 IP', unsupported: '— 不支持', cancelled: '— 已停止', error: '— 不可用' }[result.status];
     state.append(badge);
     row.append(name, address, state, makeCell(result.ms == null ? '—' : `${result.ms} ms`)); tbody.append(row);
   });
@@ -207,57 +285,60 @@ function render() {
   const observedHTTP = results.filter(x => x.format !== 'echo' && x.status === 'ok').length;
   const observed = allAddresses();
   byId('copy').disabled = !observed.length;
-  byId('copy').dataset.ips = observed.map(x => x.ip).join('\n');
-  const completed = [...results, ...rtcResults].filter(x => ['ok', 'error'].includes(x.status)).length;
-  setText('observation-note', `${completed} / ${sources.length + stunSources.length} 条通道已完成 · ${ok} 个 HTTPS 来源已响应 · ${measuredAt.toLocaleTimeString('zh-CN', { hour12: false })} · 所有通道自动运行`);
+  byId('copy').dataset.ips = [...new Set(observed.map(x => x.ip))].join('\n');
+  const completed = allResults().filter(x => !['queued', 'pending', 'idle'].includes(x.status)).length;
+  setText('observation-note', `${completed} / ${allResults().length} 项已结束 · ${ok} 个 HTTPS 来源已响应 · ${measuredAt.toLocaleTimeString('zh-CN', { hour12: false })} · 所有项目自动运行`);
   const geoPending = observed.some(x => countries.has(x.ip) && countries.get(x.ip).status === 'pending');
-  setText('run-status', busy || rtcBusy ? '全面检测中' : geoPending ? '国家查询中' : observed.length ? '本轮检测完成' : '暂未取得地址');
-  const list = byId('all-addresses'); list.replaceChildren();
-  setText('address-count', `${observed.length} 个不同地址`);
-  if (!observed.length) { const empty = document.createElement('p'); empty.className = 'muted'; empty.textContent = busy || rtcBusy ? '正在收集各条连接的地址…' : '本轮未取得地址，请检查网络后重试。'; list.append(empty); }
-  observed.forEach(entry => {
-    const card = document.createElement('article'); card.className = 'address-card';
-    const value = document.createElement('strong'); value.textContent = displayIP(entry.ip);
-    const provenance = document.createElement('p'); provenance.textContent = entry.sources.join(' · ');
-    const kinds = document.createElement('span'); kinds.className = 'evidence-tag';
-    const labels = [];
-    if (entry.evidence.some(x => x.direct)) labels.push('IP 直访');
-    if (entry.evidence.some(x => x.type === 'srflx' && x.role !== 'related')) labels.push('STUN 映射');
-    if (entry.evidence.some(x => x.type === 'host' && x.role !== 'related')) labels.push('接口候选');
-    if (entry.evidence.some(x => x.role === 'related')) labels.push('关联地址');
-    if (entry.evidence.some(x => x.role === 'forwarded')) labels.push('转发头线索');
-    if (entry.evidence.some(x => x.role === 'reported')) labels.push('来源链线索');
-    kinds.textContent = labels.join(' / ');
-    card.append(value, kinds, provenance); list.append(card);
-  });
-  const rtcAddresses = [...new Set(rtcResults.flatMap(x => (x.addresses || []).filter(a => a.scope === 'public').map(a => a.ip)))];
+  setText('run-status', running() ? '全面检测中' : geoPending ? '国家查询中' : runController && runController.signal.aborted ? '本轮已停止' : observed.length ? '本轮检测完成' : '暂未取得地址');
+  const connections = observed.filter(x => x.group === 'connection'); const clues = observed.filter(x => x.group === 'clue');
+  setText('address-count', `${connections.length} 个连接地址 · 全部保留来源`);
+  renderCards(byId('all-addresses'), connections, running() ? '正在收集各条连接的地址…' : '本轮未取得连接地址。');
+  setText('network-address-count', `${clues.length} 条 DNS / ECS / 中继 / 编码线索`);
+  renderCards(byId('network-addresses'), clues, running() ? '正在观察 DNS、中继及地址编码…' : '本轮未取得网络线索。');
+  const rtcAddresses = [...new Set(rtcResults.flatMap(x => (x.addresses || []).filter(a => a.scope === 'public' && !isClue(a)).map(a => a.ip)))];
   const rtcDone = rtcResults.some(x => x.status !== 'idle');
   setText('rtc-summary', rtcAddresses.map(displayIP).join(' · ') || (rtcBusy ? '检测中…' : rtcDone ? '未观测到公网候选' : '准备检测'));
-  let comparison = busy ? '正在对照各来源的观测结果…' : !observedHTTP ? (ok ? '本轮 HTTPS 只取得未验证的来源链 / 转发头线索，缺少可直接对照的出口地址。' : 'HTTPS 来源均未返回有效地址；这不表示你没有公网出口。') : v4.length > 1 || v6.length > 1 ? '同一地址族出现多个 HTTPS 出口，可能与网络分流、代理或路径变化有关。' : '已响应的 HTTPS 来源在同一地址族内结果一致；这不能排除 VPN 或代理。';
-  if (!busy && !v6.length) comparison += ' 本轮没有观察到 IPv6，不能据此断定设备不支持 IPv6。';
-  if (rtcAddresses.some(ip => !httpIPs.includes(ip))) comparison += ' WebRTC 观察到不同的公网候选地址；请结合网络配置判断，不能直接认定为原始 IP。';
+  let comparison = busy ? '正在对照各来源的观测结果…' : !observedHTTP ? '常规 HTTPS 暂未返回可直接对照的出口地址。' : v4.length > 1 || v6.length > 1 ? '同一地址族出现多个 HTTPS 出口，可结合来源观察分流情况。' : '本轮已响应的常规 HTTPS 来源在同一地址族内结果一致。';
+  if (!busy && !v6.length) comparison += ' 本轮未观察到 HTTPS IPv6 出口。';
+  if (rtcAddresses.some(ip => !httpIPs.includes(ip))) comparison += ' WebRTC 还观察到了不同的公网候选地址。';
   setText('comparison', comparison);
   const baseline = [...new Set(results.filter(x => !x.direct && x.format !== 'echo').flatMap(x => (x.addresses || []).map(a => a.ip)))];
-  const extras = observed.filter(entry => entry.scope === 'public' && !baseline.includes(entry.ip) && baseline.some(ip => ip.includes(':') === entry.ip.includes(':')) && entry.evidence.some(x => x.direct || (x.type === 'srflx' && x.role !== 'related')));
-  setText('path-summary', extras.length ? `发现 ${extras.length} 个与常规 HTTPS 同地址族、但地址不同的出口：${extras.map(x => displayIP(x.ip)).join('；')}。来源见上方证据标签。` : busy || rtcBusy ? '正在对照域名访问、IP 直访与 UDP 映射路径…' : '本轮未发现与常规 HTTPS 同地址族的额外直访 / STUN 出口；完整结果与转发头线索均保留在上方。');
-  byId('refresh').disabled = busy || rtcBusy;
-  byId('export').disabled = busy || rtcBusy || geoPending || !measuredAt;
+  const extras = connections.filter(entry => entry.scope === 'public' && !baseline.includes(entry.ip) && baseline.some(ip => ip.includes(':') === entry.ip.includes(':')) && entry.evidence.some(x => x.direct || x.role === 'connection' || (x.type === 'srflx' && x.role !== 'related')));
+  setText('path-summary', extras.length ? `发现 ${extras.length} 个与常规 HTTPS 同地址族、但地址不同的出口：${extras.map(x => displayIP(x.ip)).join('；')}。来源见上方证据标签。` : running() ? '正在对照 HTTP、资源请求、后台请求与 ICE 路径…' : '本轮未发现与常规 HTTPS 同地址族的额外出口；其他地址线索均已保留。');
+  const protocols = [...new Set(allResults().map(x => x.protocol).filter(Boolean))];
+  const reachable = networkResults.filter(x => x.status === 'reachable').length;
+  setText('protocol-summary', `已确认协议：${protocols.join(' / ') || (running() ? '等待响应' : '未观测到协议')}。${reachable ? ` ${reachable} 条回声通道已连通但未回传来源 IP。` : ''} HTTP/3 只在实际观测到 h3 时标记；不从服务名称推断。`);
+  byId('refresh').disabled = running(); byId('stop').disabled = !running() && !geoPending;
+  byId('export').disabled = running() || geoPending || !measuredAt;
 }
 
-async function probeHTTP(source) {
+function httpProtocol(value) {
+  const normalized = String(value || '').toLowerCase();
+  return ({ 'http/3': 'h3', 'http/2': 'h2', 'http/2.0': 'h2', 'h3': 'h3', 'h2': 'h2', 'http/1.1': 'http/1.1', 'http/1.0': 'http/1.0' })[normalized] || null;
+}
+
+async function probeHTTP(source, signal) {
   const result = results.find(x => x.id === source.id);
+  if (signal.aborted) { result.status = 'cancelled'; result.detail = '本轮已停止'; render(); return; }
   result.status = 'pending'; render();
   const controller = new AbortController();
+  const cancel = () => controller.abort(); signal.addEventListener('abort', cancel, { once: true });
   const start = performance.now();
   const timeout = setTimeout(() => controller.abort(), 9000);
   try {
     const url = new URL(source.url); url.searchParams.set('_', String(Date.now()));
     const response = await fetch(url.href, { signal: controller.signal, cache: 'no-store', credentials: 'omit', referrerPolicy: 'no-referrer' });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const body = await window.IPObservatoryProbes.readText(response);
+    const timing = performance.getEntriesByName ? performance.getEntriesByName(url.href).slice(-1)[0] : null;
+    result.protocol = httpProtocol(timing && timing.nextHopProtocol);
     let value;
-    if (source.format === 'json') value = (await response.json()).ip;
+    if (['json', 'zxinc', 'netokay'].includes(source.format)) {
+      const data = JSON.parse(body);
+      value = source.format === 'zxinc' ? data.data && data.data.myip : source.format === 'netokay' ? data.client_ip : data.ip;
+      if (source.format === 'netokay') result.protocol = httpProtocol(data.http_protocol) || result.protocol;
+    }
     else if (source.format === 'echo') {
-      const data = await response.json();
+      const data = JSON.parse(body);
       const add = (raw, role, header) => {
         const ip = reportedIP(raw);
         if (ip && !result.addresses.some(x => x.ip === ip && x.role === role && x.header === header)) result.addresses.push({ ip, scope: addressScope(ip), role, header });
@@ -277,8 +358,8 @@ async function probeHTTP(source) {
       result.status = 'ok'; scheduleCountries(); return;
     }
     else {
-      const body = await response.text();
       value = source.format === 'trace' ? (body.match(/^ip=(.+)$/m) || [])[1] : body;
+      if (source.format === 'trace') result.protocol = httpProtocol((body.match(/^http=(.+)$/m) || [])[1]) || result.protocol;
     }
     const ip = normalizeIP(value);
     if (!ip || addressScope(ip) !== 'public') throw new Error('返回值不是有效公网 IP');
@@ -286,9 +367,9 @@ async function probeHTTP(source) {
     if (family === 4 && ip.includes(':') || family === 6 && !ip.includes(':')) throw new Error('地址族与检测通道不符');
     result.addresses = [{ ip, scope: 'public' }]; result.status = 'ok'; scheduleCountries();
   } catch (error) {
-    result.status = 'error';
-    result.detail = error.name === 'AbortError' ? '超时（9 秒）' : error instanceof TypeError ? '网络 / CORS / 浏览器限制' : error.message;
-  } finally { clearTimeout(timeout); result.ms = Math.round(performance.now() - start); render(); }
+    result.status = signal.aborted ? 'cancelled' : 'error';
+    result.detail = signal.aborted ? '本轮已停止' : error.name === 'AbortError' ? '超时（9 秒）' : error instanceof TypeError ? '网络 / CORS / 浏览器限制' : error.message;
+  } finally { clearTimeout(timeout); signal.removeEventListener('abort', cancel); result.ms = Math.round(performance.now() - start); render(); }
 }
 
 function reportedIP(raw) {
@@ -305,16 +386,42 @@ async function runLimited(items, task, concurrency) {
 }
 
 async function refresh() {
-  if (busy || rtcBusy) return;
-  busy = true; rtcBusy = true; measuredAt = new Date();
+  if (running()) return;
+  busy = true; rtcBusy = true; networkBusy = true; measuredAt = new Date();
+  runController = new AbortController(); const signal = runController.signal;
   countries.forEach((entry, ip) => { if (entry.status === 'error') countries.delete(ip); });
   results = sources.map(x => ({ ...x, status: 'queued', addresses: [] }));
   rtcResults = stunSources.map(x => ({ ...x, status: 'queued', addresses: [] }));
+  networkResults = networkSources.map(x => ({ ...x, status: 'queued', addresses: [] }));
   setText('notice', ''); render();
   await Promise.all([
-    runLimited(sources, probeHTTP, 4).then(() => { busy = false; render(); }),
-    runLimited(stunSources, probeSTUN, 4).then(() => { rtcBusy = false; render(); }),
+    runLimited(sources, source => probeHTTP(source, signal), 4).finally(() => { busy = false; render(); }),
+    runLimited(stunSources, source => probeSTUN(source, signal), 4).finally(() => { rtcBusy = false; render(); }),
+    runLimited(networkSources, source => probeNetwork(source, signal), 2).finally(() => { networkBusy = false; render(); }),
   ]);
+}
+
+async function probeNetwork(source, signal) {
+  const result = networkResults.find(x => x.id === source.id);
+  if (signal.aborted) { result.status = 'cancelled'; result.detail = '本轮已停止'; render(); return; }
+  const start = performance.now(); result.status = 'pending'; render();
+  try {
+    const observed = await window.IPObservatoryProbes.run(source, signal);
+    result.detail = observed.detail || ''; result.protocol = observed.protocol || null;
+    const seen = new Set();
+    result.addresses = (observed.addresses || []).flatMap(address => {
+      const ip = normalizeIP(address.ip); if (!ip) return [];
+      if (source.family && ip.includes(':') !== (source.family === 6)) return [];
+      const key = `${address.role}:${address.via}:${ip}`; if (seen.has(key)) return []; seen.add(key);
+      return [{ ...address, ip, scope: addressScope(ip) }];
+    });
+    result.status = observed.status;
+    if (['ok', 'partial'].includes(result.status) && !result.addresses.length) {
+      result.status = 'error'; result.detail = '服务未返回有效地址线索';
+    }
+    scheduleCountries();
+  } catch (_) { result.status = 'error'; result.detail = '该检测路径执行失败'; }
+  finally { result.ms = Math.round(performance.now() - start); render(); }
 }
 
 function collectCandidate(result, candidate, via = 'ICE event') {
@@ -337,15 +444,35 @@ function collectCandidate(result, candidate, via = 'ICE event') {
   return values.some(x => typeof x.value === 'string' && x.value.endsWith('.local'));
 }
 
-async function probeSTUN(source) {
+async function publicTurnServer(url) {
+  if (!crypto.subtle) throw new Error('Web Crypto 不可用');
+  // This is the provider's intentionally public demo shared secret, not an account key.
+  // https://www.metered.ca/tools/openrelay/#static-auth
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode('openrelayprojectsecret'), { name: 'HMAC', hash: 'SHA-1' }, false, ['sign']);
+  const username = `${Math.floor(Date.now() / 1000) + 600}:ip-observatory`;
+  const signed = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(username));
+  return { urls: url, username, credential: btoa(String.fromCharCode(...new Uint8Array(signed))) };
+}
+
+async function probeSTUN(source, signal) {
   const result = rtcResults.find(x => x.id === source.id);
+  if (signal.aborted) { result.status = 'cancelled'; result.detail = '本轮已停止'; render(); return; }
   const start = performance.now();
   result.status = 'pending'; result.addresses = []; result.detail = '';
   render();
   if (!window.RTCPeerConnection) { result.status = 'error'; result.detail = '浏览器不支持 WebRTC'; result.ms = Math.round(performance.now() - start); render(); return; }
   let urls = source.url ? [source.url] : [];
+  let iceServers = source.iceServers;
+  if (source.turn) {
+    let timer;
+    try {
+      iceServers = [await Promise.race([publicTurnServer(source.url), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('TURN 凭据生成超时')), 2000); })])];
+    } catch (_) { result.status = signal.aborted ? 'cancelled' : 'error'; result.detail = signal.aborted ? '本轮已停止' : '无法生成公开 TURN 服务的临时凭据'; result.ms = Math.round(performance.now() - start); render(); return; }
+    finally { clearTimeout(timer); }
+  }
   if (source.host) {
     const controller = new AbortController(); const timeout = setTimeout(() => controller.abort(), 5000);
+    const cancel = () => controller.abort(); signal.addEventListener('abort', cancel, { once: true });
     try {
       result.detail = `准备 IPv${source.family} STUN 目标`; render();
       const type = source.family === 6 ? 28 : 1;
@@ -356,16 +483,17 @@ async function probeSTUN(source) {
       const endpoints = [...new Set((data.Answer || []).filter(x => x.type === type).map(x => normalizeIP(x.data)).filter(ip => ip && addressScope(ip) === 'public' && ip.includes(':') === (source.family === 6)))];
       if (!endpoints.length) throw new Error(`未解析到 IPv${source.family} STUN 目标`);
       urls = endpoints.map(ip => `stun:${source.family === 6 ? `[${ip}]` : ip}:${source.port}`);
-    } catch (_) { result.status = 'error'; result.detail = `IPv${source.family} STUN 目标解析不可用`; result.ms = Math.round(performance.now() - start); render(); return; }
-    finally { clearTimeout(timeout); }
+    } catch (_) { result.status = signal.aborted ? 'cancelled' : 'error'; result.detail = signal.aborted ? '本轮已停止' : `IPv${source.family} STUN 目标解析不可用`; result.ms = Math.round(performance.now() - start); render(); return; }
+    finally { clearTimeout(timeout); signal.removeEventListener('abort', cancel); }
   }
+  if (signal.aborted) { result.status = 'cancelled'; result.detail = '本轮已停止'; result.ms = Math.round(performance.now() - start); render(); return; }
   return new Promise(resolve => {
     let pc; let done = false; let hidden = false; let finishing = false;
     const finish = async message => {
       if (done || finishing) return; finishing = true; clearTimeout(timer);
       let statsTimer;
       const notes = [];
-      try { if (pc) {
+      try { if (pc && !signal.aborted) {
         // Also inspect the final local SDP so candidate event timing cannot omit addresses.
         try {
           const sdp = pc.localDescription ? pc.localDescription.sdp || '' : '';
@@ -386,7 +514,7 @@ async function probeSTUN(source) {
         } catch (_) { notes.push('传输接口不可用'); }
         try { if (typeof pc.getStats === 'function') {
           const stats = await Promise.race([pc.getStats(), new Promise(resolveStats => { statsTimer = setTimeout(() => resolveStats(null), 1000); })]);
-          if (stats) stats.forEach(stat => {
+          if (stats && !signal.aborted) stats.forEach(stat => {
             if (stat.type !== 'local-candidate') return;
             hidden = collectCandidate(result, { address: stat.address || stat.ip, type: stat.candidateType, protocol: stat.protocol }, 'getStats') || hidden;
           });
@@ -394,20 +522,28 @@ async function probeSTUN(source) {
         } } catch (_) { notes.push('连接统计不可用'); }
       } }
       finally {
-        clearTimeout(statsTimer); done = true;
+        clearTimeout(statsTimer); signal.removeEventListener('abort', cancel); done = true;
         if (pc) { pc.onicecandidate = null; pc.onicegatheringstatechange = null; pc.onicecandidateerror = null; try { pc.close(); } catch (_) { /* Already closed. */ } }
       }
       result.status = result.addresses.length ? 'ok' : 'error';
       result.detail = [message || (result.addresses.length ? (hidden ? '部分候选地址受 mDNS 隐藏' : '') : hidden ? '候选地址受 mDNS 隐藏，未取得数字 IP' : '未取得候选 IP；可能受 UDP / 隐私设置限制'), ...notes].filter(Boolean).join('；');
+      if (source.turn) {
+        const allocated = result.addresses.some(x => x.type === 'relay' && x.role !== 'related');
+        result.status = allocated ? 'ok' : result.addresses.length ? 'partial' : 'error';
+        result.detail = [allocated ? 'TURN 已分配中继；中继地址单独展示' : '未确认 TURN 分配；保留已取得的其他候选', ...notes].join('；');
+      }
+      if (signal.aborted) { result.status = 'cancelled'; result.detail = '本轮已停止；保留已观测结果'; }
       result.ms = Math.round(performance.now() - start);
       try { render(); } finally { resolve(); }
     };
+    const cancel = () => finish('本轮已停止');
     const timer = setTimeout(() => finish(), source.timeout || 10000);
+    signal.addEventListener('abort', cancel, { once: true });
     try {
-      pc = new RTCPeerConnection({ iceServers: source.iceServers || (urls.length ? [{ urls }] : []), iceCandidatePoolSize: 0, iceTransportPolicy: 'all' });
+      pc = new RTCPeerConnection({ iceServers: iceServers || (urls.length ? [{ urls }] : []), iceCandidatePoolSize: 0, iceTransportPolicy: 'all' });
       pc.onicecandidate = event => {
         if (!event.candidate) { finish(); return; }
-        if (!done) { hidden = collectCandidate(result, event.candidate) || hidden; render(); }
+        if (!done && !finishing && !signal.aborted) { hidden = collectCandidate(result, event.candidate) || hidden; render(); }
       };
       pc.onicegatheringstatechange = () => { if (pc.iceGatheringState === 'complete') finish(); };
       pc.createDataChannel('ip-observation');
@@ -415,19 +551,32 @@ async function probeSTUN(source) {
         pc.addTransceiver('audio', { direction: 'recvonly' });
         pc.addTransceiver('video', { direction: 'recvonly' });
       }
-      pc.createOffer().then(offer => { if (!done) return pc.setLocalDescription(offer); }).catch(() => finish('WebRTC 建连被阻止或失败'));
+      pc.createOffer().then(offer => { if (!done && !finishing && !signal.aborted) return pc.setLocalDescription(offer); }).catch(() => finish('WebRTC 建连被阻止或失败'));
     } catch (_) { finish('WebRTC 初始化被阻止或失败'); }
   });
 }
 
 try {
 byId('refresh').addEventListener('click', () => refresh().catch(showStartupFailure));
+byId('stop').addEventListener('click', () => {
+  if (runController) runController.abort();
+  countryQueue.length = 0;
+  countries.forEach((value, ip) => { if (value.status === 'pending') countries.set(ip, { status: 'error' }); });
+  countryControllers.forEach(controller => controller.abort());
+  setText('notice', '已停止本轮检测，保留已返回的结果。'); render();
+});
+window.addEventListener('pagehide', () => {
+  if (runController) runController.abort();
+  countryQueue.length = 0;
+  countries.forEach((value, ip) => { if (value.status === 'pending') countries.set(ip, { status: 'error' }); });
+  countryControllers.forEach(controller => controller.abort());
+});
 byId('copy').addEventListener('click', async () => {
-  try { await navigator.clipboard.writeText(byId('copy').dataset.ips); setText('notice', '全部已观测地址已复制，每行一个 IP。'); }
+  try { await navigator.clipboard.writeText(byId('copy').dataset.ips); setText('notice', '全部观测地址已复制，包含解析器 / 网段 / 中继线索；类别见页面和报告。'); }
   catch (_) { setText('notice', '浏览器未允许复制，请选中地址手动复制。'); }
 });
 byId('export').addEventListener('click', () => {
-  const report = { measuredAt: measuredAt.toISOString(), note: 'Observed network addresses; not proof of an underlying IP or VPN leak. Country is approximate IP geolocation, not a person’s location.', addresses: allAddresses().map(address => ({ ...address, country: countryInfo(address.ip) })), results: [...results, ...rtcResults].map(({ name, channel, status, addresses, ms, detail }) => ({ name, channel, status, addresses: addresses.map(address => ({ ...address, country: countryInfo(address.ip) })), ms, detail })) };
+  const report = { schemaVersion: 2, assetVersion: ASSET_VERSION, measuredAt: measuredAt.toISOString(), note: 'Connection observations, DNS resolvers, ECS network hints and relay servers have separate roles. Reachable echo services do not report a client IP. Countries are IP database assignments.', addresses: allAddresses().map(address => ({ ...address, country: countryInfo(address.ip) })), results: allResults().map(({ id, name, channel, status, addresses, ms, detail, protocol }) => ({ id, name, channel, status, addresses: addresses.map(address => ({ ...address, country: countryInfo(address.ip) })), ms, detail, protocol })) };
   const url = URL.createObjectURL(new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' }));
   const link = document.createElement('a'); link.href = url; link.download = 'ip-observation.json'; document.body.append(link); link.click(); link.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);

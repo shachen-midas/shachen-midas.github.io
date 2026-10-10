@@ -2,78 +2,105 @@
 
 A buildless, browser-only network observation page for **https://shachen-midas.github.io/**.
 
-## Features
+## Automatic coverage
 
-- 14 HTTPS channels: ipify and icanhazip address-family endpoints, Cloudflare hostname/literal IPv4/literal IPv6 trace, Amazon CheckIP, and HTTPBingo/HTTPBin origin and forwarded-header observations.
-- 13 automatic WebRTC configurations: Bilibili, HiTV, MiWiFi, the five-server IPPure comparison configuration, host-only, Google and Cloudflare hostname STUN, Cloudflare UDP 53, explicit IPv4/IPv6 targets for both providers, and a receive-only audio/video offer. No camera or microphone permissions or capture.
-- All observed addresses shown equally at the top, deduplicated with every source preserved. ICE events, relatedAddress/raddr, final local SDP, ICE transport local candidates, and getStats local-candidate records are included. Remote candidates and STUN server DNS answers are never counted as visitor addresses.
-- Per-address country flags via country.is, with explicit unknown and local/shared address labels.
-- Source-level results, elapsed time, independent error states, copy all addresses, and local JSON export including country and provenance.
-- Chinese interface, responsive layout, keyboard controls, and reduced-motion support.
+Version `20261010-6` runs **53 jobs** on every visit or full refresh. These are endpoint/configuration combinations, including several request contexts and connectivity-only checks.
 
-## Accuracy and privacy
+| Group | Jobs | What is observed |
+| --- | ---: | --- |
+| HTTPS Fetch | 19 | ipify, icanhazip, Cloudflare hostname/literal IPv4/literal IPv6, Amazon, HTTPBingo/HTTPBin, ZXINC, IP.SB, NetOkay, and Cloudflare ports 8443/2087. |
+| WebRTC / ICE | 20 | Host interfaces; Google, Cloudflare, Bilibili, HiTV and MiWiFi STUN; an IPPure comparison; explicit IPv4/IPv6 targets; receive-only media; Open Relay TURN over UDP, TCP and TLS. |
+| DNS / ECS | 2 | A fresh IP-API random hostname and a bash.ws session with four names, triggered through Fetch, an image and a DNS-prefetch hint. |
+| XMLHttpRequest | 2 | ipify dual stack and ZXINC, separately from Fetch. |
+| Script / iframe | 3 | ipify IPv4, IPv6 and dual stack using JSONP inside an opaque-origin sandbox. |
+| Dedicated Worker | 2 | ipify and Cloudflare requests from a worker. |
+| Service Worker | 1 | Two fixed endpoints from a temporary worker scoped to `/workers/`. |
+| WebSocket | 2 | Small challenge echoes over WSS at WebSocket.org and NetOkay. These services do not return the client IP. |
+| WebTransport | 2 | Small QUIC datagram echoes at Semantic Echo on ports 443 and 4438. These services do not return the client IP. |
 
-The page displays addresses observed on particular network paths. It cannot guarantee discovery of an original address behind a VPN, proxy, NAT, or browser privacy protections. Different addresses do not prove a VPN leak. Failed IPv6 checks do not prove the device lacks IPv6 support. Local/shared ICE addresses are labeled separately from public candidates; mDNS names are not presented as IPs.
+The user selected existing public services only: no paid resources, new hosting accounts, backend deployment, or private API credentials.
 
-Every page load and refresh automatically runs HTTPS and STUN checks in parallel. Country flags represent approximate IP database country/region assignments, not the visitor’s nationality or actual location. Unknown countries use 🌐; local/shared/reserved addresses use 🏠 and unspecified placeholder addresses use ⚪.
+Every observed connection address stays visible with its country flag and all sources. DNS resolvers, ECS hints, TURN relays and IPv6-derived IPv4 hints appear in a separate visible section. Copy includes every distinct address; export retains its role and evidence. Unsupported APIs, unavailable paths, partial ICE results, and successful echoes without an IP have different states.
 
-The application has no backend, analytics, cookies, or persistent visitor storage. Public observed IPs are sent to `https://api.country.is/{ip}` for country lookup; local/shared addresses are not sent. Country results are cached only in page memory, with at most three concurrent requests and a six-second timeout. Each HTTP and WebRTC queue runs at most four probes at once. Country lookup failure does not remove an observed IP. Failed lookups retry on a new full scan. External IP and STUN services necessarily see connection metadata; these services and GitHub may maintain their own logs. Reports are generated only on visitor request and downloaded to that visitor's device. Browser JavaScript and page assets are public even when the source repository is private.
+### HTTP protocol evidence
 
-## Maintain
+Cloudflare trace `http=`, NetOkay `http_protocol`, and available Resource Timing `nextHopProtocol` fields are retained. Only an actual `h3` observation is labeled HTTP/3. Ordinary Fetch does not force HTTP/3 and a missing protocol field does not imply that it was unused. The WebTransport probes require unreliable transport and verify one small datagram echo; they never perform a bandwidth test.
 
-Edit `index.html`, `style.css`, or `app.js`, then push to `master`. GitHub Pages publishes from `master` at `/`; `.nojekyll` disables Jekyll processing. No build, package installation, API key, or paid external service is required by this application. Private repository Pages availability depends on the GitHub account plan.
+### DNS evidence
 
-For each deployment that changes JavaScript, CSS, or their HTML contract, update `ASSET_VERSION` in `app.js` and the matching `data-asset-version`, script query, and stylesheet query in `index.html` together. Pages caches assets for up to ten minutes; versioned resource URLs prevent a fresh page from reusing an older script. A mismatched HTML/script version stops with a reload action instead of leaving an endless loading state. The reload action bypasses the cached HTML URL as well.
+IP-API's DNS API receives a fresh 32-character random hostname. `dns.ip` is a recursive resolver address. `edns.ip` is retained as an ECS network hint with an unknown prefix length: this API does not supply a mask, so the page does not invent `/24`, `/56`, or a complete client IP.
 
-Check JavaScript syntax with `node --check app.js`. Preview using `python3 -m http.server 8000` from this directory. Open `http://localhost:8000` in a modern browser. Verify ordinary success, source failure, unavailable IPv6, repeated detection, automatic WebRTC, related addresses, country success/failure, copy all, export, and a narrow viewport. HTTP timeouts are 9 seconds; ICE gathering is limited to 10 seconds. External services may be blocked or unavailable and are not guaranteed.
+bash.ws supplies a fresh ID through `/id`; four new subdomains trigger resolution and the corresponding JSON endpoint returns observations. Only records explicitly typed `dns` or `ip` are consumed. A resolver is never compared against HTTP as an extra client exit. DNS-prefetch is a browser hint and may be ignored. TLS failure on a trigger can still follow a successful DNS lookup; the result comes from the DNS observer, not from image load success.
 
-Only website source and this documentation belong in the repository. Do not commit credentials, machine configuration, visitor reports, real diagnostic captures, or deployment account secrets.
+The IP-API documentation describes HTTP and offers SSL in its paid product. Its publicly accessible DNS HTTPS endpoint returned JSON with CORS during integration research; this is not a contracted availability guarantee. This page uses HTTPS only and does not fall back to insecure requests.
+
+### ICE and TURN evidence
+
+ICE candidate events, relatedAddress/raddr, final local SDP, ICE transport local candidates and getStats local-candidate records are collected independently. Remote candidates and STUN service DNS answers are never visitor observations. Receive-only audio/video transceivers do not request or capture a microphone or camera.
+
+The IPPure comparison preserves its public Bilibili, HiTV, MiWiFi, Cloudflare and Google server ordering. Its three-second gathering timer starts final candidate/statistics readout, which may take up to one more second. New ICE events stop being accepted at that point. Other configurations use ten-second gathering timers. The three domestic STUN hosts also have independent probes, including explicit family targets where supported.
+
+Open Relay's `staticauth.openrelay.metered.ca` uses the provider's intentionally published demonstration shared secret, `openrelayprojectsecret`. Web Crypto generates ten-minute HMAC credentials in memory. This is public service configuration, not the GitHub owner's credential or a private account key. The generated username and credential are excluded from exports. Allocations are closed after gathering; no peer media or relay traffic is sent. A TURN probe requires a relay candidate to claim allocation; other candidates alone are marked partial. Relay server addresses are kept separate from client/related addresses. Availability can vary; the public static-auth endpoint was not reachable over TLS from the implementation environment during endpoint research.
+
+IPv4-mapped IPv6, 6to4 and Teredo encodings are also examined locally. A 6to4 gateway IPv4 or Teredo client mapped IPv4 is shown as a derived hint with its parent IPv6, never as a separately observed connection. The Teredo server field is not extracted as a client address. No prefixes are guessed for arbitrary IPv6 addresses.
+
+### Request contexts and lifecycle
+
+Third-party JSONP executes only inside a sandbox with `allow-scripts` and no same-origin permission. Its CSP permits the fixed IP providers; it cannot read the parent page. The parent checks the exact frame window, opaque origin, per-probe nonce and asset version before accepting a result. The script request is anonymous.
+
+Dedicated workers are terminated after their result or deadline. The Service Worker has a separate `/workers/` scope, no fetch handler, no caches, and no control over the main page. Its existing scope is checked before registration to avoid replacing an unrelated worker. The registration is removed on completion or cancellation; pagehide aborts active work. Registration cleanup is best effort if a browser terminates a page before a pending registration resolves. No visitor observations are persisted by the worker.
+
+HTTP and ICE queues each allow at most four active jobs, and other probes at most two. Country lookups have a separate three-request limit. HTTP deadlines are nine seconds; explicit STUN DNS resolution is bounded to five seconds, ICE gathering to ten seconds (three for the comparison), and final stats to one second. Extended jobs have a fifteen-second deadline; worker network requests use seven seconds. Stopping a run cancels queued/active work and keeps the results already obtained. Every job has a terminal state.
+
+## Address interpretation and privacy
+
+Country flags are approximate IP database assignments, not a person's location. Countries come from country.is, not from the name of a STUN provider. Unknown countries use a globe, local/shared/documentation addresses a house, and unspecified placeholders a neutral marker. Public observed and derived addresses are sent to country.is; local/shared/documentation addresses are not. Country lookup failure never removes an address.
+
+The application has no visitor database, analytics, cookies, localStorage, IndexedDB, or CacheStorage. Observations and temporary session identifiers stay in page memory; an export is created only on the visitor's request. Public services see their own connections or DNS queries and may retain records. GitHub and provider platform logs are outside this application's storage. No request sends one provider the other providers' observations, except that public addresses are sent to country.is for flags.
+
+Origin/forwarding chains remain explicitly unverified: upstream services or proxies can populate headers. IP-literal requests still follow the browser's effective routing configuration. Extra-exit comparison uses the same address family and excludes resolvers, ECS networks, relay servers and derived hints.
+
+### Remaining coverage boundaries
+
+- WSS and WebTransport currently provide genuine protocol reachability, with **no IP returned**. A public service that deliberately reflects the transport peer is required to add those IP observations; an ordinary echo cannot supply them.
+- Generic LAN/router enumeration is not implemented. Reading a device's WAN address requires that device's supported interface and browser local-network/CORS permissions.
+- Direct Sockets belongs to installed Isolated Web Apps, not this ordinary page. There are no browser extensions, native helpers, device capture requests, geolocation prompts or browser-exploit paths.
+- This app cannot inspect GitHub's own request logs. It uses public reflection services instead.
+
+## Files and maintenance
+
+Publish only these files:
+
+- `index.html`, `app.js`, `probes.js`, `style.css`, `favicon.svg`
+- `resource-probe.html`, `resource-probe.js`, `workers/network.js`
+- `.nojekyll`, `.gitignore`, `README.md`
+
+No build or package installation is required. The canonical syntax check is:
+
+```sh
+node --check app.js
+node --check probes.js
+node --check resource-probe.js
+node --check workers/network.js
+```
+
+Keep asset versions in the HTML, main script, probe module, sandbox response and worker response consistent. Query strings version all scripts/styles/worker registrations. A main HTML/module/script mismatch presents a reload action instead of starting incompatible code. The iframe CSP explicitly includes this site's public script URL because sandboxed origins may not match `self`; update it when forking to another origin.
+
+JSON export is schema version 2. Existing `addresses` and `results` arrays remain; address `group`, evidence roles, protocol, source ID and asset version make the additional observations distinguishable. Consumers must not treat every address as a visitor exit.
 
 ## Deployment and recovery
 
-Target: `shachen-midas/shachen-midas.github.io`, user site `https://shachen-midas.github.io/`. The target repository did not exist before this project. GitHub Pages uses the root of the `master` branch. To roll back a later edit, revert its commit and push; to stop serving the site, disable Pages in repository settings. Repository visibility does not make the published website private.
+Target: `shachen-midas/shachen-midas.github.io`; user site `https://shachen-midas.github.io/`; Pages serves `master` at `/`. The pre-expansion recovery source is commit `8558e90b9b870d902989b7264f46b6656eb03ed9`. To undo this expansion, revert its commit and push to the same branch. Do not reset or force-push unrelated changes.
 
-## References
+Never commit credentials, machine settings, visitor reports, actual IP captures or account secrets. Public provider configuration facts and the documented Open Relay demo value are the only authentication-related material in source.
 
-- [GitHub Pages and supported account plans](https://docs.github.com/en/pages/getting-started-with-github-pages/what-is-github-pages)
-- [ipify endpoint documentation](https://www.ipify.org/)
-- [WebRTC ICE candidate addresses](https://developer.mozilla.org/en-US/docs/Web/API/RTCIceCandidate/address)
-- [Cloudflare STUN service](https://developers.cloudflare.com/realtime/turn/)
+## Primary references
 
-- [Country.is API and IPv4/IPv6 country lookup](https://country.is/)
-- [WebRTC relatedAddress](https://developer.mozilla.org/en-US/docs/Web/API/RTCIceCandidate/relatedAddress)
-
-## Detection coverage
-
-| Path | Implemented behavior | Evidence interpretation |
-| --- | --- | --- |
-| HTTPS hostnames, IPv4, IPv6 | 8 normal/family-specific channels | The service observes the connection reaching it. |
-| HTTPS literal IPv4/IPv6 | 4 Cloudflare trace destinations | May follow different PAC or split-routing rules; labeled IP-direct, not asserted to bypass a proxy. |
-| Origin and forwarding chains | 2 public echo services | Header-derived addresses remain explicitly unverified; proxies and upstream services can add them. |
-| WebRTC UDP | Bilibili / HiTV / MiWiFi 3478; Google 19302; Cloudflare 3478 and 53 | Separately captures host, server-reflexive and related addresses. |
-| Explicit STUN address families | Live A/AAAA lookups for Google and Cloudflare through Google DNS | DNS answers configure only the service destination, not visitor results. |
-| Browser address surfaces | ICE events, SDP, ICE transports, getStats, receive-only offer | Only local-candidate stats are collected. One-second stats deadline; gathering timers are ten seconds, or three seconds for the reference configuration. |
-| DNS resolver / ECS observation | Requires an authoritative DNS collector and correlation endpoint | Resolver IPs and ECS prefixes are different evidence from the client's exact IP. Not supplied by ordinary DoH queries. |
-| TURN TCP/TLS | Requires an authenticated TURN endpoint and short-lived credentials | Relay addresses identify the relay; related or server-observed client addresses must be classified separately. |
-| HTTP/WebSocket/WebTransport collector | Requires a public backend | Observes the transport peer and any forwarded headers; headers need a defined trust boundary. |
-| Permission-gated browser interfaces | No device capture requested | Browser consent can affect available interfaces; the page does not acquire camera, microphone, or location data. |
-
-The page highlights additional direct-IP/STUN addresses only when they differ from ordinary HTTPS observations **within the same address family**. It retains all raw observed IP records and provenance rather than declaring one to be the original address. A TLS-valid literal destination still uses the browser's effective proxy/routing configuration.
-
-The CSP allows HTTPS connections because IPv6 literal hosts are not uniformly supported in CSP host-source syntax. Application request destinations remain fixed in the source; STUN target lookups accept only public IP records for the two configured service names. No arbitrary visitor-provided URLs are fetched.
-
-Public service availability varies. UDP 53 binding support was checked during implementation but is not listed as a guaranteed endpoint in the current provider port table. No TURN credentials or paid service account are embedded.
-
-- [WebRTC IP handling modes](https://www.rfc-editor.org/rfc/rfc8828.html)
-- [WebRTC local-candidate stats](https://developer.mozilla.org/en-US/docs/Web/API/RTCIceCandidateStats)
-- [Cloudflare service ports](https://developers.cloudflare.com/realtime/turn/)
-
-## Domestic STUN comparison
-
-The public IPPure Claude page uses Bilibili, HiTV, MiWiFi, Cloudflare, and Google STUN in a single peer connection, in that order, with a three-second collection timeout. The earlier version of this site omitted those first three destinations. Destination-based proxy rules can send these STUN paths through different exits.
-
-This site now probes those three destinations individually and also runs the same five-server ordering in a comparison peer connection. Its three-second gathering timer starts final candidate/statistics readout, which can take up to one additional second and still include arriving candidates. All four probes start first in the automatic WebRTC queue. The other configurations retain their ten-second gathering timer. Server names describe the destination; an observed IP's country still comes from geolocation, never from the server name. `CN ROUTE` is a destination category, not a claim that the response IP is in China.
-
-The reference page uses MaxMind / DB-IP / IP2Location through its own API for location labels, while this site uses country.is. Different country labels alone must not be treated as proof that the numeric IP was not collected.
-
-Reference inspected: [IPPure WebRTC module](https://ippure.com/assets/chunks/webrtc.B2iVidua.js), [IPPure Claude page](https://ippure.com/claude), and [IPPure geolocation module](https://ippure.com/assets/chunks/useFastIPInfo.BWfKblf_.js). Only public server configuration facts were used; no third-party application code was copied.
+- [IP-API DNS API](https://ip-api.com/docs/dns), [bash.ws official client](https://github.com/macvk/dnsleaktest), [EDNS Client Subnet](https://www.rfc-editor.org/rfc/rfc7871.html)
+- [Public WebSocket echo source](https://github.com/ably/echo.websocket.org), [NetOkay browser checks](https://netokay.net/connection-checks.js), [Semantic Echo service/source](https://github.com/jlukic/semantic-echo)
+- [Open Relay public configuration](https://www.metered.ca/tools/openrelay/), [Cloudflare supported HTTPS ports](https://developers.cloudflare.com/fundamentals/reference/network-ports/)
+- [IPPure WebRTC configuration](https://ippure.com/assets/chunks/webrtc.B2iVidua.js), [IPPure geolocation module](https://ippure.com/assets/chunks/useFastIPInfo.BWfKblf_.js)
+- [WebRTC IP handling](https://www.rfc-editor.org/rfc/rfc8828.html), [local-candidate statistics](https://developer.mozilla.org/en-US/docs/Web/API/RTCIceCandidateStats)
+- [Teredo address encoding](https://www.rfc-editor.org/rfc/rfc4380.html#section-4), [6to4 encoding](https://www.rfc-editor.org/rfc/rfc3056.html#section-2)
+- [HTTP protocol timing](https://developer.mozilla.org/en-US/docs/Web/API/PerformanceResourceTiming/nextHopProtocol), [WebTransport](https://developer.mozilla.org/en-US/docs/Web/API/WebTransport)
+- [Country.is](https://country.is/), [GitHub Pages](https://docs.github.com/en/pages/getting-started-with-github-pages/what-is-github-pages)
